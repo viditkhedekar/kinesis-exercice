@@ -3,7 +3,7 @@ name: Lat Pulldown
 
 metrics:
   elbow: { type: angle, points: [shoulder, elbow, wrist], sided: true }    # small = bar pulled down
-  torso: { type: segment_vertical_angle, points: [hip, shoulder] }
+  torso: { type: segment_vertical_angle, points: [hip, shoulder], sided: true }
   shoulder_ext: { type: angle, points: [hip, shoulder, elbow], sided: true }
 
 rep:

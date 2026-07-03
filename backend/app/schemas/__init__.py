@@ -198,6 +198,8 @@ class LiveFinishIn(BaseModel):
     frames: list[list[list[float]]]
     timestamps: list[float] = []
     sets: list[SetBound] = []
+    width: int = 0        # camera frame dimensions (for correct overlay aspect)
+    height: int = 0
 
 
 class SetSummaryOut(BaseModel):

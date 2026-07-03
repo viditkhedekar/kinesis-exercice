@@ -5,6 +5,9 @@ import type {
   Ghost,
   JobStatus,
   Landmarks,
+  LiveFinishResult,
+  LiveScoreResult,
+  PoseFrame,
   ProgressPoint,
   Report,
   SessionSummary,
@@ -95,4 +98,28 @@ export const api = {
 
   compare: (a: number, b: number) =>
     req<CompareResult>("/compare", { method: "POST", body: JSON.stringify({ session_a: a, session_b: b }) }),
+
+  // --- live camera mode ---
+  liveCreate: (exerciseKey: string) =>
+    req<SessionSummary>("/sessions/live", {
+      method: "POST",
+      body: JSON.stringify({ exercise_key: exerciseKey }),
+    }),
+  liveScore: (id: number, fps: number, frames: PoseFrame[]) =>
+    req<LiveScoreResult>(`/sessions/live/${id}/score`, {
+      method: "POST",
+      body: JSON.stringify({ fps, frames }),
+    }),
+  liveFinish: (
+    id: number,
+    frames: PoseFrame[],
+    timestamps: number[],
+    sets: { start: number; end: number }[],
+    width: number,
+    height: number,
+  ) =>
+    req<LiveFinishResult>(`/sessions/live/${id}/finish`, {
+      method: "POST",
+      body: JSON.stringify({ frames, timestamps, sets, width, height }),
+    }),
 };

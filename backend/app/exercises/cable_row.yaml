@@ -1,0 +1,58 @@
+key: cable_row
+name: Seated Cable Row
+
+metrics:
+  elbow: { type: angle, points: [shoulder, elbow, wrist], sided: true }    # small = pulled in
+  torso: { type: segment_vertical_angle, points: [hip, shoulder], sided: true }
+
+rep:
+  signal: elbow
+  direction: valley                   # pull-in = minimum elbow angle
+  smooth_window: 7
+  min_prominence: 25
+  min_distance_frames: 8
+  bottom_threshold: 95
+
+rules:
+  - id: short_rom
+    type: insufficient_rom
+    message: "Partial pull — the handle doesn't reach the torso, or the arms don't fully extend at the front, so the mid-back misses its full range."
+    tip: "Drive the elbows past the ribs to touch the torso, then let the arms extend fully between reps."
+    joints: [elbow]
+    params: { metric: elbow, min_rom: 60, moderate_at: 45, severe_at: 30, unit: deg, plane: sagittal }
+
+  - id: incomplete_stretch
+    type: metric_threshold_at_phase
+    message: "The arms don't straighten at the front, cutting off the stretched position where the lats and mid-back load up."
+    tip: "Let the handle travel forward until the arms are straight and feel the back lengthen before pulling."
+    joints: [elbow]
+    params: { metric: elbow, phase: top, aggregate: value_at, comparator: lt, threshold: 155, moderate_at: 145, severe_at: 130, unit: deg, plane: sagittal }
+
+  - id: torso_rocking
+    type: metric_aggregate
+    message: "The torso rocks back and forth to swing the weight, replacing back tension with momentum."
+    tip: "Set the torso near-vertical and keep it still; row with the arms and back, not by leaning."
+    joints: [hip, shoulder]
+    params: { metric: torso, aggregate: range, comparator: gt, threshold: 16, moderate_at: 26, severe_at: 40, unit: deg, plane: sagittal }
+
+  - id: rom_asymmetry
+    type: rom_asymmetry
+    message: "The two arms row through different ranges — one side of the back is doing more of the work."
+    tip: "Pull both handles evenly to the same endpoint; train the weaker side unilaterally if needed."
+    joints: [elbow]
+    params: { metric: elbow, max_diff: 18, moderate_at: 30, severe_at: 50, unit: deg, plane: frontal }
+
+  - id: shoulder_shrug
+    type: landmark_drift
+    message: "The shoulders shrug up during the pull (shown side), shifting the row into the traps instead of the mid-back."
+    tip: "Keep the shoulders down and lead with the elbows; squeeze the shoulder blades at the back."
+    params: { landmark: shoulder, reference: hip, axis: y, aggregate: net_up, threshold: 8, moderate_at: 14, severe_at: 22, sided: true, plane: sagittal }
+
+  - id: inconsistent_tempo
+    type: tempo_consistency
+    message: "Rep tempo drifts across the set, usually fatigue creeping in and control slipping."
+    tip: "Hold a steady pull-and-return cadence; end the set when speed drops sharply."
+    joints: [elbow]
+    params: { max_cv: 28, moderate_at: 40, severe_at: 60 }
+
+score_base: 100

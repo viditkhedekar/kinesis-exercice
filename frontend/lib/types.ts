@@ -44,6 +44,7 @@ export interface SessionSummary {
   exercise_key: string;
   status: "uploaded" | "processing" | "complete" | "failed";
   created_at: string;
+  mode?: "upload" | "live";
 }
 
 export interface JobStatus {
@@ -119,6 +120,13 @@ export interface KeyMetrics {
   rep_count: number;
 }
 
+export interface SetSummary {
+  set_index: number;
+  rep_count: number;
+  avg_score: number;
+  duration_s: number;
+}
+
 export interface Report {
   session: SessionSummary;
   video: VideoMeta | null;
@@ -131,7 +139,34 @@ export interface Report {
   fault_groups: GroupedFault[];
   coaching: string | null;
   coaching_provider: string | null;
+  // Live Camera Mode extras (empty/null for uploaded sessions).
+  sets: SetSummary[];
+  time_under_tension: number | null;
+  duration_s: number | null;
 }
+
+// --- Live Camera Mode ---
+
+export interface LiveCue {
+  type: string;
+  message: string;
+  tip: string;
+  severity: "minor" | "moderate" | "severe";
+}
+
+export interface LiveScoreResult {
+  reps: Rep[];
+  rep_count: number;
+  running_score: number;
+  latest_cue: LiveCue | null;
+}
+
+export interface LiveFinishResult {
+  session_id: number;
+}
+
+// A captured frame: [x, y, z, visibility] per landmark, plus a capture time (s).
+export type PoseFrame = number[][];
 
 export interface Landmarks {
   fps: number;

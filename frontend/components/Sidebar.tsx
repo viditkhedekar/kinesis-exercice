@@ -8,6 +8,7 @@ import ThemeToggle from "./ThemeToggle";
 
 const NAV = [
   { href: "/dashboard", label: "Dashboard", icon: GridIcon },
+  { href: "/camera", label: "Live Camera", icon: CameraIcon },
   { href: "/history", label: "History & Progress", icon: ChartIcon },
   { href: "/settings", label: "Settings", icon: GearIcon },
 ];
@@ -105,6 +106,15 @@ function SearchIcon() {
     <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" className="shrink-0">
       <circle cx="7" cy="7" r="4.5" />
       <path d="M10.5 10.5L14 14" strokeLinecap="round" />
+    </svg>
+  );
+}
+function CameraIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+      <rect x="1.5" y="4" width="13" height="9" rx="1.5" />
+      <path d="M5 4l1-1.5h4L11 4" />
+      <circle cx="8" cy="8.5" r="2.3" />
     </svg>
   );
 }

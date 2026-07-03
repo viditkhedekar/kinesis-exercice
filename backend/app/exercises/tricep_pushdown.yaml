@@ -1,0 +1,60 @@
+key: tricep_pushdown
+name: Cable Tricep Pushdown
+
+metrics:
+  elbow: { type: angle, points: [shoulder, elbow, wrist], sided: true }    # large = pushed down (extended)
+  upper_arm: { type: segment_vertical_angle, points: [shoulder, elbow], sided: true }
+  torso: { type: segment_vertical_angle, points: [hip, shoulder], sided: true }
+
+rep:
+  signal: elbow
+  direction: peak                     # full extension = maximum elbow angle
+  smooth_window: 7
+  min_prominence: 25
+  min_distance_frames: 8
+  bottom_threshold: 140
+
+rules:
+  - id: incomplete_extension
+    type: metric_threshold_at_phase
+    message: "Arms don't fully extend at the bottom, so the triceps never reach the locked-out position where they contract hardest."
+    tip: "Push all the way down until the elbows are straight and squeeze the triceps before letting the bar rise."
+    joints: [elbow]
+    params: { metric: elbow, phase: top, aggregate: value_at, comparator: lt, threshold: 160, moderate_at: 150, severe_at: 135, unit: deg, plane: sagittal }
+
+  - id: short_rom
+    type: insufficient_rom
+    message: "Partial range — the bar doesn't travel far enough, trimming the triceps' working range at one or both ends."
+    tip: "Let the bar rise until the forearms are past parallel, then push to full lockout every rep."
+    joints: [elbow]
+    params: { metric: elbow, min_rom: 55, moderate_at: 40, severe_at: 28, unit: deg, plane: sagittal }
+
+  - id: flaring_elbows
+    type: metric_aggregate
+    message: "The upper arms drift forward and swing, using the shoulders and lats to push the weight down instead of the triceps."
+    tip: "Pin the elbows to your sides and keep the upper arms vertical; only the forearms should move."
+    joints: [shoulder, elbow]
+    params: { metric: upper_arm, aggregate: range, comparator: gt, threshold: 18, moderate_at: 28, severe_at: 42, unit: deg, plane: sagittal }
+
+  - id: torso_lean
+    type: metric_aggregate
+    message: "The torso pitches forward to bear down on the bar, adding bodyweight and momentum instead of triceps work."
+    tip: "Stand tall and brace; keep the trunk still and drive through the triceps alone."
+    joints: [hip, shoulder]
+    params: { metric: torso, aggregate: range, comparator: gt, threshold: 14, moderate_at: 24, severe_at: 36, unit: deg, plane: sagittal }
+
+  - id: rom_asymmetry
+    type: rom_asymmetry
+    message: "The two arms extend through different ranges — one triceps is short-changing its reps."
+    tip: "Push both sides to full lockout evenly; if using a rope, keep the hands level."
+    joints: [elbow]
+    params: { metric: elbow, max_diff: 16, moderate_at: 28, severe_at: 46, unit: deg, plane: frontal }
+
+  - id: inconsistent_tempo
+    type: tempo_consistency
+    message: "Rep tempo drifts across the set, usually fatigue and control fading late."
+    tip: "Hold a steady push-and-return cadence; end the set when it breaks down."
+    joints: [elbow]
+    params: { max_cv: 28, moderate_at: 40, severe_at: 60 }
+
+score_base: 100

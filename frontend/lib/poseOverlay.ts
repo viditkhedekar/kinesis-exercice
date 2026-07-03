@@ -144,6 +144,30 @@ export function renderOverlay(
   }
 }
 
+/**
+ * Draw a single live pose frame (Live Camera Mode). `landmarks` is one frame of
+ * `[x, y, visibility]` (or `[x, y, z, visibility]`) triplets in normalized
+ * coords; `srcW/srcH` are the camera frame dimensions for letterboxing.
+ * `mirror` flips horizontally to match a selfie-view video.
+ */
+export function renderLiveFrame(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  srcW: number,
+  srcH: number,
+  landmarks: number[][],
+  edges: number[][],
+  mirror = false,
+) {
+  ctx.clearRect(0, 0, w, h);
+  const rect = containRect(w, h, srcW, srcH);
+  // A landmark's visibility is the last element ([x,y,vis] or [x,y,z,vis]).
+  const vis = (p: number[]) => p[p.length - 1];
+  const frame = landmarks.map((p) => [mirror ? 1 - p[0] : p[0], p[1], vis(p)]);
+  drawSkeleton(ctx, rect, frame, edges, "#22d3ee", 0.95, 4);
+}
+
 export function scoreColor(score: number): string {
   if (score >= 85) return "#34d399";
   if (score >= 65) return "#fbbf24";

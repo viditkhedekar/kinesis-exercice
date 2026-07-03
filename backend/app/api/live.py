@@ -226,7 +226,8 @@ def finish_live_session(
     eff_fps = FINISH_TARGET_FPS
     duration_s = float(len(landmarks) / eff_fps) if eff_fps else 0.0
     pose = PoseResult(
-        landmarks=landmarks, fps=eff_fps, duration=duration_s, width=0, height=0
+        landmarks=landmarks, fps=eff_fps, duration=duration_s,
+        width=body.width, height=body.height,
     )
 
     # Persist landmarks so /landmarks, /metrics and Ghost Replay work for live too.
