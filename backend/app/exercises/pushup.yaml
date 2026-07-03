@@ -1,0 +1,67 @@
+key: pushup
+name: Push-Up
+
+metrics:
+  elbow: { type: angle, points: [shoulder, elbow, wrist], sided: true }   # small = bottom
+  body_line: { type: angle, points: [shoulder, hip, ankle], sided: true } # ~180 = straight
+
+rep:
+  signal: elbow
+  direction: valley
+  smooth_window: 7
+  min_prominence: 25
+  min_distance_frames: 8
+  bottom_threshold: 110
+
+rules:
+  - id: insufficient_depth
+    type: metric_threshold_at_phase
+    message: "The chest stops well short of the floor — the elbows barely bend, so the pecs and triceps train only a fraction of the range."
+    tip: "Lower until the elbows reach about 90deg or the chest is a fist off the floor."
+    joints: [elbow]
+    params: { metric: elbow, phase: bottom, aggregate: value_at, comparator: gt, threshold: 100, moderate_at: 115, severe_at: 135, unit: deg, plane: sagittal }
+
+  - id: hip_sag
+    type: metric_threshold_at_phase
+    message: "The hips sag (or pike), breaking the straight plank line and shifting load onto the lower back instead of the chest and core."
+    tip: "Squeeze the glutes and brace the core to hold one rigid line from shoulders to ankles."
+    joints: [hip, shoulder, ankle]
+    params: { metric: body_line, aggregate: min, comparator: lt, threshold: 162, moderate_at: 152, severe_at: 140, unit: deg, plane: sagittal }
+
+  - id: incomplete_lockout
+    type: metric_threshold_at_phase
+    message: "The arms don't fully straighten at the top, keeping constant tension off the triceps and shortening each rep."
+    tip: "Press all the way to straight arms with a slight shoulder reach at the top."
+    joints: [elbow]
+    params: { metric: elbow, phase: top, aggregate: value_at, comparator: lt, threshold: 150, moderate_at: 140, severe_at: 125, unit: deg, plane: sagittal }
+
+  - id: elbow_asymmetry
+    type: asymmetry
+    message: "The arms bend unevenly, so one side takes more of the load through the rep."
+    tip: "Lower evenly and keep the chest square to the floor."
+    joints: [elbow]
+    params: { metric: elbow, aggregate: max, max_diff: 15, moderate_at: 25, severe_at: 40, unit: deg, plane: frontal }
+
+  - id: rom_asymmetry
+    type: rom_asymmetry
+    message: "The two arms move through different ranges — a sign of a strength or stability imbalance."
+    tip: "Match left and right depth; add a short pause at the bottom to even them out."
+    joints: [elbow]
+    params: { metric: elbow, max_diff: 18, moderate_at: 30, severe_at: 50, unit: deg, plane: frontal }
+
+  - id: rushed_tempo
+    type: tempo
+    severity: minor
+    message: "Reps are fast and bouncy, using momentum off the bottom rather than controlled strength."
+    tip: "Take ~1.5s to lower under control before pressing up."
+    joints: [elbow]
+    params: { min_seconds: 0.7 }
+
+  - id: inconsistent_tempo
+    type: tempo_consistency
+    message: "Tempo varies across the set, usually fatigue starting to erode form."
+    tip: "Hold a steady cadence and stop the set when it slips."
+    joints: [elbow]
+    params: { max_cv: 28, moderate_at: 40, severe_at: 60 }
+
+score_base: 100

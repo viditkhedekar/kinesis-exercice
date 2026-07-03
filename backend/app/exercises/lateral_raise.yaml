@@ -1,0 +1,74 @@
+key: lateral_raise
+name: Dumbbell Lateral Raise
+
+metrics:
+  abduction: { type: angle, points: [hip, shoulder, elbow], sided: true }  # large = raised
+  elbow: { type: angle, points: [shoulder, elbow, wrist], sided: true }
+  torso: { type: segment_vertical_angle, points: [hip, shoulder], sided: true }
+
+rep:
+  signal: abduction
+  direction: peak
+  smooth_window: 7
+  min_prominence: 20
+  min_distance_frames: 8
+  bottom_threshold: 70
+
+rules:
+  - id: above_shoulder_height
+    type: metric_aggregate
+    message: "The arms are raised above shoulder height, which rolls the shoulders forward and shifts the work from the side delts to the traps."
+    tip: "Stop when the upper arms are level with the floor; higher is not better here."
+    joints: [shoulder]
+    params: { metric: abduction, aggregate: max, comparator: gt, threshold: 100, moderate_at: 110, severe_at: 125, unit: deg, plane: frontal }
+
+  - id: insufficient_height
+    type: metric_aggregate
+    message: "The arms don't reach shoulder height, so the side delts never get into their most effective range."
+    tip: "Raise until the upper arms are roughly parallel to the floor."
+    joints: [shoulder]
+    params: { metric: abduction, aggregate: max, comparator: lt, threshold: 75, moderate_at: 65, severe_at: 50, unit: deg, plane: frontal }
+
+  - id: arm_height_asymmetry
+    type: asymmetry
+    message: "One arm is consistently higher than the other, so the delts are trained unevenly."
+    tip: "Raise both arms to the same height; film head-on and match them."
+    joints: [shoulder]
+    params: { metric: abduction, aggregate: max, max_diff: 10, moderate_at: 18, severe_at: 30, unit: deg, plane: frontal }
+
+  - id: timing_asymmetry
+    type: timing_asymmetry
+    message: "One arm reaches the top later than the other — the lift is out of sync side to side."
+    tip: "Raise both arms together to a shared count."
+    joints: [shoulder]
+    params: { metric: abduction, direction: peak, max_seconds: 0.20, moderate_at: 0.40, severe_at: 0.70, plane: frontal }
+
+  - id: excessive_torso_lean
+    type: metric_aggregate
+    message: "The torso sways to swing the weight up, using the whole body instead of isolating the delts."
+    tip: "Stand tall and brace; keep the trunk still so only the arms move."
+    joints: [hip, shoulder]
+    params: { metric: torso, aggregate: max, comparator: gt, threshold: 14, moderate_at: 22, severe_at: 34, unit: deg, plane: sagittal }
+
+  - id: shoulder_shrug
+    type: landmark_drift
+    message: "The shoulders shrug up during the raise (shown side), handing the work to the traps."
+    tip: "Depress the shoulder blades and lead with the elbows, not the hands."
+    params: { landmark: shoulder, reference: hip, axis: y, aggregate: net_up, threshold: 8, moderate_at: 14, severe_at: 22, sided: true, plane: frontal }
+
+  - id: excessive_elbow_bend
+    type: metric_aggregate
+    message: "The elbows bend a lot, turning the raise into an upright-row and shortening the delts' lever arm."
+    tip: "Keep a fixed soft bend (~160deg) in the elbow throughout."
+    joints: [elbow]
+    params: { metric: elbow, aggregate: min, comparator: lt, threshold: 150, moderate_at: 135, severe_at: 115, unit: deg, plane: any }
+
+  - id: momentum
+    type: tempo
+    severity: minor
+    message: "Reps are fast and swung, relying on momentum rather than delt tension."
+    tip: "Raise over ~1s and lower slowly; if you must swing, drop the weight."
+    joints: [shoulder]
+    params: { min_seconds: 0.8 }
+
+score_base: 100

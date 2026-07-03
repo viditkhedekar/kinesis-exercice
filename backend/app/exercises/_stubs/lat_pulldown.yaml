@@ -1,0 +1,39 @@
+key: lat_pulldown
+name: Lat Pulldown
+
+metrics:
+  elbow:
+    type: angle
+    points: [shoulder, elbow, wrist]  # small = bar pulled down
+    sided: true
+  shoulder_abduction:
+    type: angle
+    points: [hip, shoulder, elbow]
+    sided: true
+  torso:
+    type: segment_vertical_angle
+    points: [hip, shoulder]
+
+rep:
+  signal: elbow
+  direction: valley                   # pull-down = minimum elbow angle
+  smooth_window: 7
+  min_prominence: 25
+  min_distance_frames: 8
+  bottom_threshold: 90
+
+rules:
+  - id: short_rom
+    type: insufficient_rom
+    severity: moderate
+    weight: 22
+    message: "Partial pull — bring the bar to upper-chest height and fully extend the arms at the top."
+    params: { metric: elbow, min_rom: 55 }
+  - id: torso_swing
+    type: metric_threshold_at_phase
+    severity: moderate
+    weight: 16
+    message: "Excessive lean-back — keep the torso mostly upright and pull with the lats."
+    params: { metric: torso, aggregate: max, comparator: gt, threshold: 30 }
+
+score_base: 100

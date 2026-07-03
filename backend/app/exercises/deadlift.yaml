@@ -1,0 +1,68 @@
+key: deadlift
+name: Deadlift
+
+# Spine/shoulder rounding cues are 2D side-view approximations — pair with a
+# coach's eye. Thresholds reflect common barbell coaching guidance.
+metrics:
+  hip: { type: angle, points: [shoulder, hip, knee], sided: true }     # small = hinged
+  knee: { type: angle, points: [hip, knee, ankle], sided: true }
+  torso: { type: segment_vertical_angle, points: [hip, shoulder], sided: true }
+  back_round: { type: angle, points: [ear, shoulder, hip], sided: true }  # small = rounded
+
+rep:
+  signal: hip
+  direction: valley
+  smooth_window: 7
+  min_prominence: 25
+  min_distance_frames: 10
+  bottom_threshold: 120
+
+rules:
+  - id: lumbar_rounding
+    type: metric_threshold_at_phase
+    message: "The upper back/spine rounds under load (approximate) — a flexed spine under heavy load is the deadlift's main injury risk."
+    tip: "Set a tall, braced, neutral spine before the bar moves and keep the chest proud through the pull."
+    joints: [shoulder, hip]
+    params: { metric: back_round, phase: bottom, aggregate: value_at, comparator: lt, threshold: 150, moderate_at: 140, severe_at: 125, unit: deg, plane: sagittal }
+
+  - id: bar_path_drift
+    type: landmark_drift
+    message: "The bar (from wrist path, shown side) swings away from the body, lengthening the lever arm and stressing the lower back."
+    tip: "Keep the bar dragging up the legs; cue the lats to pull it back into you."
+    params: { landmark: wrist, axis: x, aggregate: range, threshold: 10, moderate_at: 18, severe_at: 30, sided: true, plane: sagittal }
+
+  - id: hips_rise_early
+    type: velocity_order
+    message: "The hips shoot up before the bar leaves the floor, turning the pull into a stiff-legged good-morning."
+    tip: "Push the floor away and raise hips and chest together; don't let the hips lead."
+    joints: [hip, shoulder]
+    params: { landmark_a: hip, landmark_b: shoulder, phase: ascent, axis: y, ratio_threshold: 1.6, moderate_at: 2.2, severe_at: 3.0, plane: sagittal }
+
+  - id: incomplete_lockout
+    type: metric_threshold_at_phase
+    message: "The hips don't fully extend at the top, so the rep finishes soft and the glutes never fully engage."
+    tip: "Finish standing tall with glutes squeezed and the bar against the hips."
+    joints: [hip]
+    params: { metric: hip, phase: top, aggregate: value_at, comparator: lt, threshold: 165, moderate_at: 158, severe_at: 148, unit: deg, plane: sagittal }
+
+  - id: shoulders_rounded
+    type: landmark_drift
+    message: "The shoulders round forward of the hips at setup/early pull (approximate, shown side), softening the upper back."
+    tip: "Pull the shoulders back and down and keep the upper back tight before you pull."
+    params: { landmark: shoulder, reference: hip, axis: x, aggregate: maxabs, threshold: 12, moderate_at: 20, severe_at: 32, sided: true, plane: sagittal }
+
+  - id: asymmetric_pull
+    type: asymmetry
+    message: "One side extends ahead of the other, so the bar tips and one leg/hip is doing more of the work."
+    tip: "Grip evenly, brace both sides, and drive through both legs equally."
+    joints: [hip]
+    params: { metric: hip, aggregate: max, max_diff: 12, moderate_at: 22, severe_at: 35, unit: deg, plane: frontal }
+
+  - id: uneven_lockout
+    type: rom_asymmetry
+    message: "The two hips move through different ranges — a dominant side is taking over the lift."
+    tip: "Even out the pull with paused reps; address the lagging side with single-leg work."
+    joints: [hip]
+    params: { metric: hip, max_diff: 12, moderate_at: 22, severe_at: 35, unit: deg, plane: frontal }
+
+score_base: 100

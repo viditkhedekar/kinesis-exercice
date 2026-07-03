@@ -1,0 +1,6 @@
+.venv*
+__pycache__/
+*.pyc
+.pytest_cache/
+tests/
+app/services/pose/models/pose_landmarker.task

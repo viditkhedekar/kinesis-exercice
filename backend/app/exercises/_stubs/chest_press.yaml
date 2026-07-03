@@ -1,0 +1,38 @@
+key: chest_press
+name: Seated Chest Press
+
+metrics:
+  elbow:
+    type: angle
+    points: [shoulder, elbow, wrist]  # large = pressed out
+    sided: true
+
+rep:
+  signal: elbow
+  direction: peak                     # press out = maximum elbow angle
+  smooth_window: 7
+  min_prominence: 25
+  min_distance_frames: 8
+  bottom_threshold: 140
+
+rules:
+  - id: incomplete_lockout
+    type: metric_threshold_at_phase
+    severity: minor
+    weight: 14
+    message: "Arms aren't fully extending at the end of the press."
+    params: { metric: elbow, aggregate: max, comparator: lt, threshold: 155 }
+  - id: short_rom
+    type: insufficient_rom
+    severity: moderate
+    weight: 22
+    message: "Partial range of motion — bring the handles back toward the chest and press fully."
+    params: { metric: elbow, min_rom: 60 }
+  - id: arm_asymmetry
+    type: asymmetry
+    severity: minor
+    weight: 12
+    message: "Arms are pressing unevenly."
+    params: { metric: elbow, aggregate: max, max_diff: 18 }
+
+score_base: 100

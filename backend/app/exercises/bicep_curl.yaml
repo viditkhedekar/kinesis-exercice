@@ -1,0 +1,94 @@
+key: bicep_curl
+name: Dumbbell Bicep Curl
+
+metrics:
+  elbow: { type: angle, points: [shoulder, elbow, wrist], sided: true }    # small = curled
+  torso: { type: segment_vertical_angle, points: [hip, shoulder], sided: true }
+  upper_arm: { type: segment_vertical_angle, points: [shoulder, elbow], sided: true }
+  wrist: { type: angle, points: [elbow, wrist, index], sided: true }
+
+rep:
+  signal: elbow
+  direction: valley
+  smooth_window: 7
+  min_prominence: 30
+  min_distance_frames: 8
+  bottom_threshold: 80
+
+rules:
+  - id: incomplete_extension
+    type: metric_threshold_at_phase
+    message: "The arm doesn't fully straighten at the bottom, cutting off the stretched part of the curl where the biceps build the most size and strength."
+    tip: "Lower under control until the elbow is straight before curling the next rep."
+    joints: [elbow]
+    params: { metric: elbow, phase: top, aggregate: value_at, comparator: lt, threshold: 150, moderate_at: 140, severe_at: 125, unit: deg, plane: sagittal }
+
+  - id: incomplete_contraction
+    type: metric_threshold_at_phase
+    message: "The curl stops short of full flexion, so the biceps never reach peak contraction at the top."
+    tip: "Curl all the way up and squeeze for a beat at the top of each rep."
+    joints: [elbow]
+    params: { metric: elbow, phase: bottom, aggregate: value_at, comparator: gt, threshold: 60, moderate_at: 75, severe_at: 95, unit: deg, plane: sagittal }
+
+  - id: partial_reps
+    type: insufficient_rom
+    message: "Overall range of motion is short — the weight is moved through only part of the available range, reducing the training effect."
+    tip: "Use a load you can curl from a fully straight arm to a full squeeze."
+    joints: [elbow]
+    params: { metric: elbow, min_rom: 80, moderate_at: 65, severe_at: 45, unit: deg, plane: sagittal }
+
+  - id: rom_asymmetry
+    type: rom_asymmetry
+    message: "The two arms move through different ranges — the weaker or tighter side is short-changing its reps."
+    tip: "Match the range on both arms; if one side can't keep up, lighten the load or train it unilaterally."
+    joints: [elbow]
+    params: { metric: elbow, max_diff: 18, moderate_at: 30, severe_at: 50, unit: deg, plane: frontal }
+
+  - id: timing_asymmetry
+    type: timing_asymmetry
+    message: "One arm reaches the top noticeably later than the other, so the set is really two out-of-sync arms."
+    tip: "Curl both arms together to a shared count; slow down so the lagging arm keeps pace."
+    joints: [elbow]
+    params: { metric: elbow, direction: valley, max_seconds: 0.20, moderate_at: 0.40, severe_at: 0.70, plane: frontal }
+
+  - id: elbow_drift
+    type: landmark_drift
+    message: "The elbow drifts forward during the curl (shown side), recruiting the front delt and shortening the biceps' line of pull."
+    tip: "Pin the elbow against your side and just in front of the ribs; only the forearm should move."
+    params: { landmark: elbow, reference: hip, axis: x, aggregate: range, threshold: 12, moderate_at: 18, severe_at: 28, sided: true, plane: sagittal }
+
+  - id: upper_arm_movement
+    type: metric_aggregate
+    message: "The upper arm swings instead of staying fixed, using the shoulder to help lift the weight."
+    tip: "Keep the upper arm vertical and motionless; if it has to move, the weight is too heavy."
+    joints: [shoulder, elbow]
+    params: { metric: upper_arm, aggregate: range, comparator: gt, threshold: 18, moderate_at: 28, severe_at: 40, unit: deg, plane: sagittal }
+
+  - id: body_swing
+    type: metric_aggregate
+    message: "The torso rocks back and forth to throw the weight up, replacing biceps tension with momentum."
+    tip: "Stand tall and brace; keep the trunk perfectly still through the whole curl."
+    joints: [hip, shoulder]
+    params: { metric: torso, aggregate: range, comparator: gt, threshold: 12, moderate_at: 20, severe_at: 32, unit: deg, plane: sagittal }
+
+  - id: shoulder_shrug
+    type: landmark_drift
+    message: "The shoulder shrugs up near the top (shown side), shifting work to the traps instead of the biceps."
+    tip: "Keep the shoulders down and back; lead with the forearm, not the shoulder."
+    params: { landmark: shoulder, reference: hip, axis: y, aggregate: net_up, threshold: 8, moderate_at: 14, severe_at: 22, sided: true, plane: sagittal }
+
+  - id: wrist_deviation
+    type: metric_aggregate
+    message: "The wrist flexes or extends excessively, bleeding force into the forearm and stressing the wrist joint."
+    tip: "Keep the wrist neutral and stacked over the forearm throughout."
+    joints: [wrist]
+    params: { metric: wrist, aggregate: min, comparator: lt, threshold: 150, moderate_at: 135, severe_at: 115, unit: deg, plane: sagittal }
+
+  - id: inconsistent_tempo
+    type: tempo_consistency
+    message: "Rep tempo drifts across the set — usually fatigue creeping in and form starting to break down."
+    tip: "Hold a steady 2s-up / 2s-down cadence; end the set when you can't."
+    joints: [elbow]
+    params: { max_cv: 28, moderate_at: 40, severe_at: 60 }
+
+score_base: 100

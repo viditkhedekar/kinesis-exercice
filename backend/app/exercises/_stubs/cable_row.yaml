@@ -1,0 +1,36 @@
+key: cable_row
+name: Seated Cable Row
+
+metrics:
+  elbow:
+    type: angle
+    points: [shoulder, elbow, wrist]  # small = pulled in
+    sided: true
+  torso:
+    type: segment_vertical_angle
+    points: [hip, shoulder]
+    sided: true
+
+rep:
+  signal: elbow
+  direction: valley                   # pull-in = minimum elbow angle
+  smooth_window: 7
+  min_prominence: 25
+  min_distance_frames: 8
+  bottom_threshold: 90
+
+rules:
+  - id: short_rom
+    type: insufficient_rom
+    severity: moderate
+    weight: 22
+    message: "Partial pull — drive the elbows further back and fully extend the arms between reps."
+    params: { metric: elbow, min_rom: 60 }
+  - id: torso_rocking
+    type: metric_threshold_at_phase
+    severity: moderate
+    weight: 18
+    message: "Excessive torso rocking — keep the trunk steady and pull with the back."
+    params: { metric: torso, aggregate: max, comparator: gt, threshold: 25 }
+
+score_base: 100

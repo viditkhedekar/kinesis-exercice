@@ -1,0 +1,36 @@
+key: tricep_pushdown
+name: Cable Tricep Pushdown
+
+metrics:
+  elbow:
+    type: angle
+    points: [shoulder, elbow, wrist]  # large = pushed down (extended)
+    sided: true
+  upper_arm:
+    type: segment_vertical_angle
+    points: [shoulder, elbow]         # upper arm should stay pinned/vertical
+    sided: true
+
+rep:
+  signal: elbow
+  direction: peak                     # full extension = maximum elbow angle
+  smooth_window: 7
+  min_prominence: 25
+  min_distance_frames: 8
+  bottom_threshold: 140
+
+rules:
+  - id: incomplete_extension
+    type: metric_threshold_at_phase
+    severity: moderate
+    weight: 20
+    message: "Arms aren't fully extending — push down to full lockout."
+    params: { metric: elbow, aggregate: max, comparator: lt, threshold: 155 }
+  - id: flaring_elbows
+    type: metric_threshold_at_phase
+    severity: minor
+    weight: 14
+    message: "Upper arms are drifting forward — keep the elbows pinned to your sides."
+    params: { metric: upper_arm, aggregate: max, comparator: gt, threshold: 25 }
+
+score_base: 100

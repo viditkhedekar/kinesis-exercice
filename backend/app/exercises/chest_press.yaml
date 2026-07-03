@@ -1,0 +1,75 @@
+key: chest_press
+name: Seated Chest Press
+
+metrics:
+  elbow: { type: angle, points: [shoulder, elbow, wrist], sided: true }    # large = pressed out
+  upper_arm: { type: segment_vertical_angle, points: [shoulder, elbow], sided: true }
+  torso: { type: segment_vertical_angle, points: [hip, shoulder] }
+
+rep:
+  signal: elbow
+  direction: peak                     # press out = maximum elbow angle
+  smooth_window: 7
+  min_prominence: 25
+  min_distance_frames: 8
+  bottom_threshold: 140
+
+rules:
+  - id: incomplete_lockout
+    type: metric_threshold_at_phase
+    message: "Arms don't fully extend at the end of the press, so each rep starts before the last one finished and the working range creeps shorter."
+    tip: "Press all the way out until the elbows are straight (not hyperextended) before letting the handles back."
+    joints: [elbow]
+    params: { metric: elbow, phase: top, aggregate: value_at, comparator: lt, threshold: 155, moderate_at: 145, severe_at: 130, unit: deg, plane: sagittal }
+
+  - id: short_rom
+    type: insufficient_rom
+    message: "Partial range of motion — the handles never travel far enough, cutting the pecs' most productive stretch and squeeze."
+    tip: "Let the handles come back toward the chest under control, then press fully; lighten the load if the range is limited."
+    joints: [elbow]
+    params: { metric: elbow, min_rom: 60, moderate_at: 45, severe_at: 30, unit: deg, plane: sagittal }
+
+  - id: rom_asymmetry
+    type: rom_asymmetry
+    message: "The two arms press through different ranges — one side is short-changing its reps."
+    tip: "Match the range on both arms; if one lags, drop the load or train the weak side on its own."
+    joints: [elbow]
+    params: { metric: elbow, max_diff: 18, moderate_at: 30, severe_at: 50, unit: deg, plane: frontal }
+
+  - id: arm_asymmetry
+    type: asymmetry
+    message: "One arm consistently presses further than the other, loading the chest unevenly."
+    tip: "Press both handles to the same endpoint on a shared count; film head-on to confirm."
+    joints: [elbow]
+    params: { metric: elbow, aggregate: max, max_diff: 12, moderate_at: 20, severe_at: 32, unit: deg, plane: frontal }
+
+  - id: elbow_flare
+    type: metric_aggregate
+    message: "The upper arms swing wide of the torso, stressing the front of the shoulder instead of driving through the chest."
+    tip: "Keep the elbows at roughly 45deg to the ribs; think about pressing the handles together, not just out."
+    joints: [shoulder, elbow]
+    params: { metric: upper_arm, aggregate: range, comparator: gt, threshold: 22, moderate_at: 32, severe_at: 45, unit: deg, plane: frontal }
+
+  - id: torso_heave
+    type: metric_aggregate
+    message: "The trunk rocks to help push the weight, replacing chest tension with momentum."
+    tip: "Keep your back against the pad and the torso still; only the arms should move."
+    joints: [hip, shoulder]
+    params: { metric: torso, aggregate: range, comparator: gt, threshold: 12, moderate_at: 20, severe_at: 32, unit: deg, plane: sagittal }
+
+  - id: rushed_reps
+    type: tempo
+    severity: minor
+    message: "Reps are fast and bouncy, relying on the rebound rather than controlled chest strength."
+    tip: "Lower over ~2 seconds and control the press; own both ends of the range."
+    joints: [elbow]
+    params: { min_seconds: 1.0 }
+
+  - id: inconsistent_tempo
+    type: tempo_consistency
+    message: "Rep tempo drifts across the set, usually a sign of fatigue and fading control."
+    tip: "Hold a steady cadence; end the set when bar speed drops sharply."
+    joints: [elbow]
+    params: { max_cv: 28, moderate_at: 40, severe_at: 60 }
+
+score_base: 100

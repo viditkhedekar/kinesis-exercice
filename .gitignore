@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+.venv-test/
+.pytest_cache/
+*.egg-info/
+
+# Node / Next
+node_modules/
+.next/
+out/
+
+# Data & models
+backend/app/services/pose/models/*.task
+/data/
+
+# Env
+.env
+.env.local

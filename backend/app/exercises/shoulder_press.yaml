@@ -1,0 +1,67 @@
+key: shoulder_press
+name: Overhead Shoulder Press
+
+metrics:
+  elbow: { type: angle, points: [shoulder, elbow, wrist], sided: true }    # large = pressed overhead
+  upper_arm: { type: segment_vertical_angle, points: [shoulder, elbow], sided: true }
+  torso: { type: segment_vertical_angle, points: [hip, shoulder] }
+
+rep:
+  signal: elbow
+  direction: peak                     # overhead lockout = maximum elbow angle
+  smooth_window: 7
+  min_prominence: 25
+  min_distance_frames: 8
+  bottom_threshold: 140
+
+rules:
+  - id: incomplete_lockout
+    type: metric_threshold_at_phase
+    message: "Arms don't reach full overhead lockout, so the delts and triceps miss the top of the press where the movement is finished."
+    tip: "Press until the elbows are straight and the biceps are by the ears before lowering."
+    joints: [elbow]
+    params: { metric: elbow, phase: top, aggregate: value_at, comparator: lt, threshold: 155, moderate_at: 145, severe_at: 130, unit: deg, plane: sagittal }
+
+  - id: short_rom
+    type: insufficient_rom
+    message: "Partial range — the bar or dumbbells don't travel far enough to train the shoulders through their full working range."
+    tip: "Lower to at least chin height, then press to full lockout every rep."
+    joints: [elbow]
+    params: { metric: elbow, min_rom: 55, moderate_at: 40, severe_at: 28, unit: deg, plane: sagittal }
+
+  - id: excessive_arch
+    type: metric_aggregate
+    message: "The trunk leans back to turn the press into an incline press, loading the lower back instead of the shoulders."
+    tip: "Squeeze the glutes and brace the abs so the ribcage stays down; keep the press vertical."
+    joints: [hip, shoulder]
+    params: { metric: torso, aggregate: max, comparator: gt, threshold: 16, moderate_at: 24, severe_at: 36, unit: deg, plane: sagittal }
+
+  - id: arm_asymmetry
+    type: asymmetry
+    message: "One arm locks out higher than the other, so the shoulders are pressing unevenly."
+    tip: "Press both arms to the same height on a shared count; film head-on to check."
+    joints: [elbow]
+    params: { metric: elbow, aggregate: max, max_diff: 12, moderate_at: 20, severe_at: 32, unit: deg, plane: frontal }
+
+  - id: timing_asymmetry
+    type: timing_asymmetry
+    message: "One arm reaches lockout later than the other — the press is out of sync side to side."
+    tip: "Drive both arms up together; slow down so the lagging side keeps pace."
+    joints: [elbow]
+    params: { metric: elbow, direction: peak, max_seconds: 0.20, moderate_at: 0.40, severe_at: 0.70, plane: frontal }
+
+  - id: elbow_flare
+    type: metric_aggregate
+    message: "The upper arms drift forward or wide out of the groove, stressing the shoulder and leaking pressing power."
+    tip: "Keep the forearms vertical and the elbows tracking under the wrists throughout."
+    joints: [shoulder, elbow]
+    params: { metric: upper_arm, aggregate: range, comparator: gt, threshold: 24, moderate_at: 34, severe_at: 48, unit: deg, plane: any }
+
+  - id: inconsistent_tempo
+    type: tempo_consistency
+    message: "Rep tempo drifts across the set, typically fatigue setting in as reps get grindy."
+    tip: "Hold a controlled cadence; stop the set when speed drops off a cliff."
+    joints: [elbow]
+    params: { max_cv: 28, moderate_at: 40, severe_at: 60 }
+
+score_base: 100

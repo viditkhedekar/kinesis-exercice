@@ -1,0 +1,100 @@
+key: squat
+name: Barbell Squat
+
+metrics:
+  knee: { type: angle, points: [hip, knee, ankle], sided: true }       # small = deep
+  torso: { type: segment_vertical_angle, points: [hip, shoulder], sided: true }
+  ankle_sep: { type: distance, points: [left_ankle, right_ankle] }
+  knee_valgus_ratio:
+    { type: distance, points: [left_knee, right_knee], normalize_by: ankle_sep }
+  hip_y: { type: coordinate, points: [hip], axis: y, sided: true }
+
+rep:
+  signal: knee
+  direction: valley
+  smooth_window: 7
+  min_prominence: 25
+  min_distance_frames: 10
+  bottom_threshold: 130
+
+# Thresholds follow common strength-coaching guidance (break parallel; vertical
+# shins-ish; neutral knee tracking). moderate_at/severe_at gate severity so that
+# "Severe" is reserved for genuinely large, higher-risk deviations.
+rules:
+  - id: insufficient_depth
+    type: metric_threshold_at_phase
+    message: "Squat stops above parallel — the hip crease stays higher than the knee, so the glutes and quads miss their strongest, most productive range."
+    tip: "Sit the hips down and back until the crease drops below the kneecap; widen the stance or elevate the heels if ankle/hip mobility limits you."
+    joints: [knee, hip]
+    params: { metric: knee, phase: bottom, aggregate: value_at, comparator: gt, threshold: 105, moderate_at: 118, severe_at: 135, unit: deg, plane: sagittal }
+
+  - id: incomplete_lockout
+    type: metric_threshold_at_phase
+    message: "Knees and hips don't fully extend at the top, so each rep starts before the previous one finished and the working range creeps shorter."
+    tip: "Stand all the way up and squeeze the glutes to a tall, locked position before descending again."
+    joints: [knee, hip]
+    params: { metric: knee, phase: top, aggregate: value_at, comparator: lt, threshold: 165, moderate_at: 160, severe_at: 150, unit: deg, plane: sagittal }
+
+  - id: knee_valgus
+    type: metric_threshold_at_phase
+    message: "Knees cave inward at the bottom (valgus) — the knees track inside the feet, which raises medial knee strain and leaks force."
+    tip: "Cue 'spread the floor' and drive the knees out in line with the toes, especially as you stand up."
+    joints: [knee]
+    params: { metric: knee_valgus_ratio, phase: bottom, aggregate: value_at, comparator: lt, threshold: 0.82, moderate_at: 0.78, severe_at: 0.70, unit: ratio, plane: frontal }
+
+  - id: knee_travel
+    type: landmark_drift
+    message: "Knees travel a long way forward over the toes (shown side), shifting load toward the knees and away from the hips."
+    tip: "Keep weight mid-foot and sit back into the hips so the shins stay more vertical."
+    params: { landmark: knee, reference: ankle, axis: x, aggregate: range, threshold: 22, moderate_at: 32, severe_at: 45, sided: true, plane: sagittal }
+
+  - id: heels_lift
+    type: landmark_drift
+    message: "The heel lifts off the floor (shown side) — the base becomes unstable and load shifts onto the forefoot."
+    tip: "Keep the whole foot planted and grip the floor with the heel; use a small heel elevation only if ankle mobility is the limiter."
+    params: { landmark: heel, reference: foot, axis: y, aggregate: net_up, threshold: 8, moderate_at: 15, severe_at: 25, sided: true, plane: sagittal }
+
+  - id: excessive_torso_lean
+    type: metric_threshold_at_phase
+    message: "The trunk pitches well forward at the bottom, turning the squat into a hip-dominant good-morning and adding lower-back load."
+    tip: "Brace the core and keep the chest proud; lead the ascent with the chest, not the hips."
+    joints: [shoulder, hip]
+    params: { metric: torso, phase: bottom, aggregate: value_at, comparator: gt, threshold: 50, moderate_at: 58, severe_at: 70, unit: deg, plane: sagittal }
+
+  - id: weight_shift
+    type: asymmetry
+    message: "Bodyweight shifts to one side — the pelvis drops unevenly, overloading one leg and hinting at a strength or mobility imbalance."
+    tip: "Press evenly through both feet and keep the hips level; film head-on to confirm."
+    joints: [hip]
+    params: { metric: hip_y, aggregate: max, max_diff: 5, moderate_at: 9, severe_at: 16, normalize_body: true, plane: frontal }
+
+  - id: uneven_depth
+    type: rom_asymmetry
+    message: "The two legs move through noticeably different ranges, so one side is doing more of the work."
+    tip: "Match left and right depth; address the tighter or weaker hip with unilateral work."
+    joints: [knee]
+    params: { metric: knee, max_diff: 15, moderate_at: 25, severe_at: 40, unit: deg, plane: frontal }
+
+  - id: hips_rise_faster
+    type: velocity_order
+    message: "Out of the bottom the hips shoot up faster than the shoulders, dumping the torso forward and stressing the lower back."
+    tip: "Drive hips and chest up together; keep the bar stacked over mid-foot."
+    joints: [hip, shoulder]
+    params: { landmark_a: hip, landmark_b: shoulder, phase: ascent, axis: y, ratio_threshold: 1.6, moderate_at: 2.0, severe_at: 2.8, plane: sagittal }
+
+  - id: rushed_descent
+    type: tempo
+    severity: minor
+    message: "Reps are fast and bouncy, relying on the stretch reflex rather than controlled strength."
+    tip: "Lower over ~2 seconds and own the bottom position before driving up."
+    joints: [knee]
+    params: { min_seconds: 1.2 }
+
+  - id: inconsistent_tempo
+    type: tempo_consistency
+    message: "Rep tempo varies a lot across the set, which usually means fatigue or loss of control late in the set."
+    tip: "Pick a cadence and hold it; stop the set when bar speed drops sharply."
+    joints: [knee]
+    params: { max_cv: 28, moderate_at: 40, severe_at: 60 }
+
+score_base: 100
