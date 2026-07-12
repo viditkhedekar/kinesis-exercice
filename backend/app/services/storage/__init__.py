@@ -17,6 +17,8 @@ class Storage(Protocol):
     def artifact_path(self, session_id: int, name: str) -> str: ...
     def open(self, path: str, mode: str = "rb") -> BinaryIO: ...
     def exists(self, path: str) -> bool: ...
+    def delete(self, path: str) -> None: ...
+    def delete_session(self, session_id: int) -> None: ...
 
 
 class FileSystemStorage:
@@ -45,6 +47,14 @@ class FileSystemStorage:
 
     def exists(self, path: str) -> bool:
         return Path(path).exists()
+
+    def delete(self, path: str) -> None:
+        """Remove a single stored file (e.g. the source video). No-op if missing."""
+        Path(path).unlink(missing_ok=True)
+
+    def delete_session(self, session_id: int) -> None:
+        """Remove a session's entire storage directory (video + all artifacts)."""
+        shutil.rmtree(self.root / "sessions" / str(session_id), ignore_errors=True)
 
 
 def get_storage() -> Storage:

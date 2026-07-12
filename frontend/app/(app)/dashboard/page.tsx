@@ -95,8 +95,8 @@ export default function DashboardPage() {
                       </td>
                       <td className="text-muted tabular-nums">{new Date(s.created_at).toLocaleDateString()}</td>
                       <td className="text-muted capitalize">{s.status}</td>
-                      <td className="text-right pr-3 font-mono tabular-nums" style={{ color: s.status === "complete" ? scoreColor(s.overall_score) : undefined }}>
-                        {s.status === "complete" ? s.overall_score.toFixed(0) : "—"}
+                      <td className="text-right pr-3 font-mono tabular-nums" style={{ color: s.status === "complete" && s.overall_score != null ? scoreColor(s.overall_score) : undefined }}>
+                        {s.status !== "complete" ? "—" : s.overall_score != null ? s.overall_score.toFixed(0) : "--"}
                       </td>
                     </tr>
                   ))}

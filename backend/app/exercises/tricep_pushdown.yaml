@@ -1,6 +1,12 @@
 key: tricep_pushdown
 name: Cable Tricep Pushdown
 
+filming:
+  - "Film side-on so the elbow angle is visible."
+  - "Keep your upper arm and forearm in the frame."
+  - "Pin your elbows to your sides and stand still."
+  - "Extend through your full range on every rep."
+
 metrics:
   elbow: { type: angle, points: [shoulder, elbow, wrist], sided: true }    # large = pushed down (extended)
   upper_arm: { type: segment_vertical_angle, points: [shoulder, elbow], sided: true }

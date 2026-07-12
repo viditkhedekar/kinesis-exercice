@@ -11,7 +11,7 @@ import { themeScript } from "@/components/ThemeProvider";
 // --font-sans / --font-mono tokens Tailwind reads.
 
 export const metadata: Metadata = {
-  title: "Kinesis — Movement Intelligence",
+  title: "physIQal — Intelligence behind every movement",
   description: "Biomechanics analysis of gym technique from video. Built for coaches and athletes.",
 };
 

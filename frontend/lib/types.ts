@@ -1,6 +1,7 @@
 export interface Exercise {
   key: string;
   name: string;
+  filming?: string[]; // "how to film this" pointers for the upload screen
 }
 
 export interface UserPrefs {
@@ -20,7 +21,7 @@ export interface StatRecent {
   session_id: number;
   exercise_key: string;
   exercise_name: string;
-  overall_score: number;
+  overall_score: number | null; // null = no trustworthy score ("--")
   grade: string;
   status: string;
   created_at: string;
@@ -45,6 +46,16 @@ export interface SessionSummary {
   status: "uploaded" | "processing" | "complete" | "failed";
   created_at: string;
   mode?: "upload" | "live";
+  overall_score?: number | null; // null = no trustworthy score ("--")
+  has_video?: boolean; // raw clip still stored (1 history slot)
+  has_analysis?: boolean; // analysis/Ghost data retained (¼ slot when video gone)
+}
+
+export interface Quota {
+  used: number;
+  limit: number;
+  video_count: number;
+  analysis_only_count: number;
 }
 
 export interface JobStatus {
@@ -134,11 +145,18 @@ export interface SetSummary {
   duration_s: number;
 }
 
+export interface AnalysisWarning {
+  kind: "no_subject" | "no_reps" | string;
+  title: string;
+  message: string;
+}
+
 export interface Report {
   session: SessionSummary;
   video: VideoMeta | null;
+  warning: AnalysisWarning | null; // data-quality / wrong-exercise flag
   reps: Rep[];
-  overall_score: number;
+  overall_score: number | null; // null = no trustworthy score ("--")
   grade: string;
   key_metrics: KeyMetrics | null;
   strengths: string[];

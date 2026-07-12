@@ -1,6 +1,12 @@
 key: lat_pulldown
 name: Lat Pulldown
 
+filming:
+  - "Film front-on, with the camera at about chest height."
+  - "Keep your torso and both arms in the frame."
+  - "Stay seated and square to the bar."
+  - "Pull through your full range on every rep."
+
 metrics:
   elbow: { type: angle, points: [shoulder, elbow, wrist], sided: true }    # small = bar pulled down
   torso: { type: segment_vertical_angle, points: [hip, shoulder], sided: true }

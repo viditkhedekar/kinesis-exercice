@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from collections import Counter
 
+import numpy as np
+
 from app.config import get_settings
 from app.db import SessionLocal
 from app.exercises import load_exercise
@@ -76,6 +78,60 @@ def _detect_reps_per_set(
             )
             out.append((global_rw, set_idx))
     return out
+
+
+def _assess_quality(
+    landmarks: np.ndarray,
+    metrics: dict,
+    config: ExerciseConfig,
+    rep_count: int,
+) -> dict | None:
+    """Flag clips that likely can't be trusted, so the report can say so instead
+    of presenting confident nonsense.
+
+    Two cases, in priority order:
+      1. ``no_subject`` — a person is barely visible (bad framing / lighting /
+         nobody in shot). Judged from MediaPipe landmark *visibility*.
+      2. ``no_reps`` — a person is visible but no reps of the selected exercise
+         were detected. Usually means the wrong exercise was picked, or the
+         movement wasn't performed clearly on camera.
+
+    Returns a warning dict (kind/title/message) or ``None`` when the clip looks
+    fine. Kept intentionally conservative — it should only fire on clearly bad
+    input, never on a merely imperfect set.
+    """
+    F = len(landmarks)
+    if F == 0:
+        present_frac = 0.0
+    else:
+        vis = landmarks[:, :, 3].astype(float)          # (F, 33) visibility, NaN if undetected
+        per_frame = np.nan_to_num(np.nanmean(vis, axis=1), nan=0.0)
+        present_frac = float(np.mean(per_frame >= 0.5))
+
+    if present_frac < 0.4:
+        return {
+            "kind": "no_subject",
+            "title": "We couldn't clearly see you in this clip",
+            "message": (
+                "A person was only visible in part of the video, so this analysis may be "
+                "unreliable — it looks like the clip wasn't uploaded or filmed properly. "
+                "Re-film with your whole body in frame, good lighting, and the camera held "
+                "still (see the filming tips on the upload screen)."
+            ),
+        }
+
+    if rep_count == 0:
+        return {
+            "kind": "no_reps",
+            "title": f"This doesn't look like a {config.name}",
+            "message": (
+                f"We couldn't detect any {config.name} repetitions. You may have selected the "
+                "wrong exercise, or the movement wasn't performed clearly on camera. "
+                "Double-check the exercise you picked and re-film using the filming tips."
+            ),
+        }
+
+    return None
 
 
 def _previous_session(db, session: Session) -> Session | None:
@@ -240,7 +296,13 @@ def run_pipeline_from_landmarks(
     view = camera_view(landmarks)
     km = key_metrics(rep_windows, metrics, config, fps, view)
     overall = overall_score(groups, len(rep_windows))
-    session.overall_score = overall
+
+    # When the clip can't be trusted (wrong exercise / no subject) there's no
+    # meaningful technique score — a scoreless report reads "--" rather than a
+    # misleading 100. Otherwise store the computed score.
+    warning = _assess_quality(landmarks, metrics, config, len(rep_windows))
+    trustworthy = warning is None
+    session.overall_score = overall if trustworthy else None
 
     # Concise, data-grounded observations (incl. change vs the previous session).
     prev = _previous_session(db, session)
@@ -256,11 +318,13 @@ def run_pipeline_from_landmarks(
         insights = []
 
     summary: dict = {
-        "grade": grade(overall),
+        "grade": grade(overall) if trustworthy else "",
         "key_metrics": km,
-        "strengths": strengths(groups, km, config),
+        "strengths": strengths(groups, km, config) if trustworthy else [],
         "insights": insights,
     }
+    if warning:
+        summary["analysis_warning"] = warning
     if extra_summary:
         summary.update(extra_summary)
     session.summary = summary

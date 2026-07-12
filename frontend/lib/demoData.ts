@@ -1,5 +1,5 @@
 // Static demo data for the landing-page interactive demo. This is REAL output of
-// the Kinesis pipeline (MediaPipe pose + biomechanics + rules) precomputed on
+// the physIQal pipeline (MediaPipe pose + biomechanics + rules) precomputed on
 // four sample clips and exported to /public/demo/demos.json — only landmark
 // coordinates are stored (rendered as nodes on black), never any video.
 import type { GroupedFault, KeyMetrics } from "./types";

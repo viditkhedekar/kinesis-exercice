@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import CommandPalette from "./CommandPalette";
+import { Wordmark } from "./Logo";
 import Sidebar from "./Sidebar";
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
@@ -49,7 +50,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             <path d="M3 6h14M3 10h14M3 14h14" />
           </svg>
         </button>
-        <span className="font-semibold">Kinesis</span>
+        <Wordmark className="text-[15px]" />
         <span className="w-8" />
       </div>
 

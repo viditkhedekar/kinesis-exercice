@@ -31,8 +31,13 @@ def upsert_progress(db: DbSession, session_id: int) -> ProgressSnapshot:
     snap.rep_count = len(reps)
     # Track the overall technique score (grouped/prevalence-weighted), not the
     # raw per-rep mean, so progress reflects how the report scores the session.
-    snap.avg_score = session.overall_score or (round(float(np.mean(scores)), 1) if scores else 0.0)
-    snap.best_score = round(float(np.max(scores)), 1) if scores else 0.0
+    # A scoreless (untrustworthy) session stays NULL so it's omitted from the chart.
+    if session.overall_score is None:
+        snap.avg_score = None
+        snap.best_score = None
+    else:
+        snap.avg_score = session.overall_score or (round(float(np.mean(scores)), 1) if scores else 0.0)
+        snap.best_score = round(float(np.max(scores)), 1) if scores else 0.0
     db.flush()
     return snap
 
@@ -52,12 +57,15 @@ def progress_series(
         stmt = stmt.where(ProgressSnapshot.exercise_key == exercise_key)
     out: list[ProgressPoint] = []
     for snap, sess in db.execute(stmt).all():
+        # Untrustworthy sessions have no score — omit them from the trend line.
+        if snap.avg_score is None:
+            continue
         out.append(
             ProgressPoint(
                 session_id=snap.session_id,
                 created_at=sess.created_at,
                 avg_score=snap.avg_score,
-                best_score=snap.best_score,
+                best_score=snap.best_score or 0.0,
                 rep_count=snap.rep_count,
             )
         )
@@ -75,6 +83,9 @@ def personal_best_session(
             Session.exercise_key == exercise_key,
             Session.status == SessionStatus.complete,
             Session.id != exclude_session_id,
+            # Exclude scoreless (untrustworthy) sessions — a NULL best_score would
+            # otherwise sort first under DESC on Postgres and win "personal best".
+            ProgressSnapshot.best_score.isnot(None),
         )
         .order_by(ProgressSnapshot.best_score.desc())
         .limit(1)

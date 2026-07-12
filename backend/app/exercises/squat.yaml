@@ -1,6 +1,12 @@
 key: squat
 name: Barbell Squat
 
+filming:
+  - "Film side-on (90°) so squat depth is visible."
+  - "Frame head to feet — leave a little room overhead."
+  - "Keep the camera still — use a tripod or a ledge."
+  - "Do your normal reps at a steady tempo."
+
 metrics:
   knee: { type: angle, points: [hip, knee, ankle], sided: true }       # small = deep
   torso: { type: segment_vertical_angle, points: [hip, shoulder], sided: true }

@@ -10,4 +10,4 @@ router = APIRouter(prefix="/exercises", tags=["exercises"])
 
 @router.get("", response_model=list[ExerciseOut])
 def list_exercises() -> list[ExerciseOut]:
-    return [ExerciseOut(key=e.key, name=e.name) for e in available_exercises()]
+    return [ExerciseOut(key=e.key, name=e.name, filming=e.filming) for e in available_exercises()]

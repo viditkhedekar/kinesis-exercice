@@ -36,10 +36,10 @@ export default function LoginPage() {
   return (
     <AuthCard
       title="Welcome back"
-      subtitle="Log in to your Kinesis account."
+      subtitle="Log in to your physIQal account."
       footer={
         <>
-          New to Kinesis?{" "}
+          New to physIQal?{" "}
           <Link href="/signup" className="text-accent hover:underline">
             Create an account
           </Link>

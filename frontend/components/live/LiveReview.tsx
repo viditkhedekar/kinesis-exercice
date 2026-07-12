@@ -83,7 +83,11 @@ export default function LiveReview({ sessionId }: { sessionId: number }) {
           </div>
         </div>
         <div className="flex items-stretch divide-x divide-border rounded-[8px] border border-border overflow-hidden flex-wrap">
-          <StatBox label="Score" value={r.overall_score.toFixed(0)} color={scoreColor(r.overall_score)} />
+          <StatBox
+            label="Score"
+            value={r.overall_score != null ? r.overall_score.toFixed(0) : "—"}
+            color={r.overall_score != null ? scoreColor(r.overall_score) : undefined}
+          />
           <StatBox label="Grade" value={r.grade || "—"} />
           <StatBox label="Reps" value={`${r.reps.length}`} />
           <StatBox label="Sets" value={`${r.sets.length || 1}`} />

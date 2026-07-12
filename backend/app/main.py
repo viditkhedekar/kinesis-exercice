@@ -1,4 +1,4 @@
-"""Kinesis FastAPI application."""
+"""physIQal FastAPI application."""
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
@@ -41,7 +41,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="Kinesis API", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="physIQal API", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,

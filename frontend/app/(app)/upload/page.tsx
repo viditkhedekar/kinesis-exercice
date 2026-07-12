@@ -5,10 +5,12 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { useAuth } from "@/components/AuthProvider";
 import Dropzone from "@/components/Dropzone";
+import GuidePopup from "@/components/GuidePopup";
 import { useToast } from "@/components/Toaster";
 import { PageHeader } from "@/components/ui";
 import { api, ApiError } from "@/lib/api";
 import { takePendingFile } from "@/lib/pendingUpload";
+import { markUploadDone, useUploadGuide } from "@/lib/uploadGuide";
 
 export default function UploadPage() {
   const router = useRouter();
@@ -19,11 +21,22 @@ export default function UploadPage() {
   const [exerciseKey, setExerciseKey] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
+  // Whether the user has actively picked an exercise (vs. the pre-selected
+  // default). During the first-runs guide, the filming tips are "revealed" on
+  // that first click, matching the guide's wording.
+  const [touched, setTouched] = useState(false);
+  const [guideDismissed, setGuideDismissed] = useState(false);
+  const { active: guideActive } = useUploadGuide();
 
   // Default exercise = first of the user's preferred, else first available.
   const preferred = user?.prefs?.exercises ?? [];
   const selected = exerciseKey || preferred[0] || exercises?.[0]?.key || "";
-  const selectedName = exercises?.find((e) => e.key === selected)?.name ?? "exercise";
+  const selectedExercise = exercises?.find((e) => e.key === selected);
+  const selectedName = selectedExercise?.name ?? "exercise";
+  const filming = selectedExercise?.filming ?? [];
+  // Reveal the filming tips once an exercise is chosen (always, once the guide is
+  // done — otherwise only after the first click so the guide can point it out).
+  const showFilming = filming.length > 0 && (touched || !guideActive);
 
   // Pick up a file dropped on the dashboard, and an exercise passed via ?exercise=
   // (e.g. from the ⌘K command palette).
@@ -41,6 +54,7 @@ export default function UploadPage() {
       // Analysis now runs synchronously on the backend: this request blocks
       // until the full report is ready, then we go straight to it (no polling).
       const session = await api.upload(selected, file);
+      markUploadDone();
       router.replace(`/sessions/${session.id}`);
     } catch (e) {
       toast(e instanceof ApiError ? e.message : "Analysis failed", "error");
@@ -54,7 +68,7 @@ export default function UploadPage() {
 
   return (
     <div className="max-w-2xl">
-      <PageHeader title="New analysis" subtitle="Upload a clip and Kinesis scores every rep against biomechanics rules." />
+      <PageHeader title="New analysis" subtitle="Upload a clip and physIQal scores every rep against biomechanics rules." />
 
       <div className="card p-5 sm:p-6 space-y-6">
         <div>
@@ -63,7 +77,10 @@ export default function UploadPage() {
             {exercises?.map((e) => (
               <button
                 key={e.key}
-                onClick={() => setExerciseKey(e.key)}
+                onClick={() => {
+                  setExerciseKey(e.key);
+                  setTouched(true);
+                }}
                 className={`px-3 py-2 rounded-lg border text-sm text-left transition ${
                   selected === e.key ? "border-accent bg-accent/10 text-fg" : "border-border text-muted hover:text-fg hover:bg-surface-2"
                 }`}
@@ -72,6 +89,21 @@ export default function UploadPage() {
               </button>
             ))}
           </div>
+
+          {/* Per-exercise filming pointers. */}
+          {showFilming && (
+            <div className="mt-3 rounded-xl border border-accent/40 bg-accent/[0.04] p-3.5 animate-fade-in">
+              <div className="label mb-2">How to film your {selectedName}</div>
+              <ul className="space-y-1.5">
+                {filming.map((tip) => (
+                  <li key={tip} className="flex items-start gap-2 text-[13px]">
+                    <span className="text-accent mt-px">•</span>
+                    <span>{tip}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </div>
 
         <div>
@@ -99,6 +131,29 @@ export default function UploadPage() {
           Film side-on for squats/deadlifts and front-on for curls/raises for the most reliable results.
         </p>
       </div>
+
+      {/* First-runs guide pop-up — advances as the athlete picks an exercise then a file. */}
+      {guideActive && !guideDismissed && !file && (
+        touched ? (
+          <GuidePopup
+            step={2}
+            total={3}
+            title="Upload your clip"
+            onDismiss={() => setGuideDismissed(true)}
+          >
+            Drag &amp; drop or click to upload a video of your set.
+          </GuidePopup>
+        ) : (
+          <GuidePopup
+            step={1}
+            total={3}
+            title="Pick your exercise"
+            onDismiss={() => setGuideDismissed(true)}
+          >
+            Click an exercise to reveal guidelines on how to film your video.
+          </GuidePopup>
+        )
+      )}
     </div>
   );
 }

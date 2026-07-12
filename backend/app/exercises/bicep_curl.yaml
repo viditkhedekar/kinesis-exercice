@@ -1,6 +1,12 @@
 key: bicep_curl
 name: Dumbbell Bicep Curl
 
+filming:
+  - "Film front-on, with the camera at about chest height."
+  - "Stand still — don't step or rotate during the set."
+  - "Curl both arms so the left and right can be compared."
+  - "Keep your whole upper body in the frame."
+
 metrics:
   elbow: { type: angle, points: [shoulder, elbow, wrist], sided: true }    # small = curled
   torso: { type: segment_vertical_angle, points: [hip, shoulder], sided: true }

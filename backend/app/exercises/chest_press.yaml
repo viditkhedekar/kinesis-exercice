@@ -1,6 +1,12 @@
 key: chest_press
 name: Seated Chest Press
 
+filming:
+  - "Film side-on to the machine."
+  - "Keep your shoulders, elbows and wrists in the frame."
+  - "Stay seated with your back against the pad."
+  - "Press through your full range on every rep."
+
 metrics:
   elbow: { type: angle, points: [shoulder, elbow, wrist], sided: true }    # large = pressed out
   upper_arm: { type: segment_vertical_angle, points: [shoulder, elbow], sided: true }

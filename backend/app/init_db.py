@@ -29,7 +29,7 @@ _ADDED_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("joints", "JSON NOT NULL DEFAULT '[]'"),
     ],
     "sessions": [
-        ("overall_score", "DOUBLE PRECISION NOT NULL DEFAULT 0.0"),
+        ("overall_score", "DOUBLE PRECISION DEFAULT 0.0"),
         ("summary", "JSON"),
         ("user_id", "INTEGER"),
         ("mode", "VARCHAR(16) NOT NULL DEFAULT 'upload'"),
@@ -37,6 +37,13 @@ _ADDED_COLUMNS: dict[str, list[tuple[str, str]]] = {
     "reps": [
         ("set_index", "INTEGER"),
     ],
+}
+
+# Columns that were originally NOT NULL but must now allow NULL to represent
+# "no trustworthy score" (untrustworthy clips). DROP NOT NULL is idempotent.
+_NULLABLE_COLUMNS: dict[str, list[str]] = {
+    "sessions": ["overall_score"],
+    "progress_snapshots": ["avg_score", "best_score"],
 }
 
 # Enum values added after a type was first created (type -> [values]).
@@ -58,6 +65,12 @@ def ensure_schema() -> None:
             for name, ddl in columns:
                 conn.execute(text(f'ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {name} {ddl}'))
 
+    # 1b. Relax columns that must now allow NULL (idempotent DROP NOT NULL).
+    with engine.begin() as conn:
+        for table, columns in _NULLABLE_COLUMNS.items():
+            for name in columns:
+                conn.execute(text(f'ALTER TABLE {table} ALTER COLUMN {name} DROP NOT NULL'))
+
     # 2. Add any missing enum values. ALTER TYPE ... ADD VALUE must run outside a
     #    transaction block, so use an AUTOCOMMIT connection.
     with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
@@ -70,7 +83,7 @@ def ensure_schema() -> None:
 
 def main() -> None:
     ensure_schema()
-    print("Kinesis schema ensured (create_all + additive patches).")
+    print("physIQal schema ensured (create_all + additive patches).")
 
 
 if __name__ == "__main__":

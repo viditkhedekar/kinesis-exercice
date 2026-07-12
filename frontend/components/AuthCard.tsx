@@ -1,5 +1,5 @@
 import Link from "next/link";
-import LogoMark from "./Logo";
+import LogoMark, { Wordmark } from "./Logo";
 
 export default function AuthCard({
   title,
@@ -18,8 +18,8 @@ export default function AuthCard({
         <Link href="/" className="flex flex-col items-center gap-2.5 mb-6">
           <LogoMark size={44} className="rounded-[10px]" />
           <span className="flex flex-col items-center">
-            <span className="font-semibold text-lg tracking-tight">Kinesis</span>
-            <span className="eyebrow mt-0.5">Move better. Be better.</span>
+            <Wordmark className="text-lg" />
+            <span className="eyebrow mt-0.5">Intelligence behind every movement.</span>
           </span>
         </Link>
         <div className="card p-6">

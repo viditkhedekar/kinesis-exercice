@@ -1,6 +1,12 @@
 key: shoulder_press
 name: Overhead Shoulder Press
 
+filming:
+  - "Film front-on, with the camera at about chest height."
+  - "Press both arms overhead together."
+  - "Stand or sit square to the camera."
+  - "Keep head-to-hips in the frame."
+
 metrics:
   elbow: { type: angle, points: [shoulder, elbow, wrist], sided: true }    # large = pressed overhead
   upper_arm: { type: segment_vertical_angle, points: [shoulder, elbow], sided: true }

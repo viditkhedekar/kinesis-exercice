@@ -48,7 +48,7 @@ export default function OnboardingPage() {
       body: (
         <div className="space-y-4">
           <p className="text-muted">
-            Kinesis analyzes your lifts frame-by-frame — pose estimation, rep detection, and a
+            physIQal analyzes your lifts frame-by-frame — pose estimation, rep detection, and a
             biomechanics rule engine — then explains exactly what to fix. Let's tailor it to you. This
             takes under a minute.
           </p>

@@ -20,6 +20,7 @@ from app.models import (
     Video,
 )
 from app.schemas import (
+    AnalysisWarningOut,
     GhostOut,
     GroupedFaultOut,
     InsightOut,
@@ -28,6 +29,7 @@ from app.schemas import (
     LandmarksOut,
     MetricSeries,
     MetricsOut,
+    QuotaOut,
     RepBound,
     ReportOut,
     RepOut,
@@ -42,6 +44,28 @@ from app.services.progress import build_ghost
 from app.services.storage import get_storage
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
+
+# --- History storage quota -------------------------------------------------
+# Each user gets a budget of HISTORY_LIMIT "video slots". A session with its raw
+# clip costs a full slot; deleting the video but keeping the analysis (which still
+# powers the report and Ghost Replay) drops it to a quarter slot. Uploading needs
+# a full free slot.
+HISTORY_LIMIT = 10.0
+VIDEO_SLOT = 1.0
+ANALYSIS_SLOT = 0.25
+
+
+def _session_slots(s: Session) -> float:
+    if s.has_video:
+        return VIDEO_SLOT
+    if s.has_analysis:
+        return ANALYSIS_SLOT
+    return 0.0
+
+
+def _used_slots(db: DbSession, user: User) -> float:
+    sessions = db.scalars(select(Session).where(Session.user_id == user.id)).all()
+    return round(sum(_session_slots(s) for s in sessions), 2)
 
 
 def _valid_exercise_keys() -> set[str]:
@@ -65,6 +89,15 @@ def create_session(
 ) -> SessionOut:
     if exercise_key not in _valid_exercise_keys():
         raise HTTPException(400, f"Unknown exercise: {exercise_key}")
+
+    # Enforce the per-user history quota before storing anything new.
+    if _used_slots(db, user) + VIDEO_SLOT > HISTORY_LIMIT:
+        raise HTTPException(
+            409,
+            f"Your history is full ({int(HISTORY_LIMIT)} videos). Free a slot from your history: "
+            "fully delete a session, or delete a few videos while keeping their analysis "
+            "(each kept analysis, incl. Ghost Replay, still uses a quarter slot).",
+        )
 
     session = Session(exercise_key=exercise_key, status=SessionStatus.uploaded, user_id=user.id)
     db.add(session)
@@ -104,6 +137,49 @@ def list_sessions(
     return [SessionOut.model_validate(s) for s in db.scalars(stmt).all()]
 
 
+@router.get("/quota", response_model=QuotaOut)
+def get_quota(db: DbSession = Depends(get_db), user: User = Depends(get_current_user)) -> QuotaOut:
+    sessions = db.scalars(select(Session).where(Session.user_id == user.id)).all()
+    video_count = sum(1 for s in sessions if s.has_video)
+    analysis_only = sum(1 for s in sessions if not s.has_video and s.has_analysis)
+    return QuotaOut(
+        used=round(video_count * VIDEO_SLOT + analysis_only * ANALYSIS_SLOT, 2),
+        limit=HISTORY_LIMIT,
+        video_count=video_count,
+        analysis_only_count=analysis_only,
+    )
+
+
+@router.delete("/{session_id}/video", response_model=SessionOut)
+def delete_video(
+    session_id: int,
+    db: DbSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> SessionOut:
+    """Free a history slot by deleting the raw clip while keeping the analysis
+    (report, metrics, and Ghost Replay landmarks). Drops the session to ¼ slot."""
+    session = _owned(db, session_id, user)
+    if session.video is not None:
+        get_storage().delete(session.video.path)
+        db.delete(session.video)
+        db.commit()
+        db.refresh(session)
+    return SessionOut.model_validate(session)
+
+
+@router.delete("/{session_id}", status_code=204)
+def delete_session(
+    session_id: int,
+    db: DbSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> None:
+    """Delete a session outright — video, analysis, and all artifacts."""
+    session = _owned(db, session_id, user)
+    get_storage().delete_session(session_id)
+    db.delete(session)  # cascades to video/artifact/reps/faults/coaching/progress/job
+    db.commit()
+
+
 @router.get("/{session_id}/status", response_model=JobStatusOut)
 def get_status(
     session_id: int,
@@ -138,6 +214,9 @@ def get_report(
 
     summary = session.summary or {}
     key_metrics = KeyMetricsOut(**summary["key_metrics"]) if summary.get("key_metrics") else None
+    warning = (
+        AnalysisWarningOut(**summary["analysis_warning"]) if summary.get("analysis_warning") else None
+    )
 
     # Live Camera Mode extras: per-set breakdown derived from reps + stored bounds.
     set_summaries = _build_set_summaries(session, summary)
@@ -145,6 +224,7 @@ def get_report(
     return ReportOut(
         session=SessionOut.model_validate(session),
         video=VideoOut.model_validate(session.video) if session.video else None,
+        warning=warning,
         reps=reps,
         overall_score=session.overall_score,
         grade=summary.get("grade", ""),

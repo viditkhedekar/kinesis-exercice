@@ -15,6 +15,7 @@ class ExerciseOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     key: str
     name: str
+    filming: list[str] = []  # "how to film this" pointers for the upload screen
 
 
 # --- Auth ---
@@ -61,6 +62,17 @@ class SessionOut(BaseModel):
     status: str
     created_at: datetime
     mode: str = "upload"
+    overall_score: float | None = None  # NULL = no trustworthy score ("--" in UI)
+    has_video: bool = False   # raw clip still stored (1 history slot)
+    has_analysis: bool = False  # analysis/Ghost data retained (¼ slot when video gone)
+
+
+class QuotaOut(BaseModel):
+    """Per-user history storage budget, in 'video slots'."""
+    used: float
+    limit: float
+    video_count: int            # sessions still holding their raw clip (1 slot each)
+    analysis_only_count: int    # video-deleted sessions kept for analysis (¼ slot each)
 
 
 class JobStatusOut(BaseModel):
@@ -144,12 +156,22 @@ class KeyMetricsOut(BaseModel):
     rep_count: int = 0
 
 
+class AnalysisWarningOut(BaseModel):
+    """A data-quality flag surfaced prominently at the top of the report when the
+    clip likely can't be trusted — e.g. no visible subject, or a movement that
+    doesn't match the selected exercise (wrong exercise / bad upload)."""
+    kind: str          # "no_subject" | "no_reps"
+    title: str
+    message: str
+
+
 class ReportOut(BaseModel):
     """Full interactive-report payload returned to the frontend."""
     session: SessionOut
     video: VideoOut | None = None
+    warning: AnalysisWarningOut | None = None  # data-quality / wrong-exercise flag
     reps: list[RepOut] = []                 # per-rep breakdown (+ faults for overlay)
-    overall_score: float = 0.0
+    overall_score: float | None = 0.0       # NULL = no trustworthy score ("--" in UI)
     grade: str = ""
     key_metrics: KeyMetricsOut | None = None
     strengths: list[str] = []
@@ -323,7 +345,7 @@ class StatRecent(BaseModel):
     session_id: int
     exercise_key: str
     exercise_name: str
-    overall_score: float
+    overall_score: float | None = None  # NULL = no trustworthy score ("--" in UI)
     grade: str
     status: str
     created_at: datetime

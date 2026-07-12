@@ -31,6 +31,9 @@ def get_stats(db: DbSession = Depends(get_db), user: User = Depends(get_current_
         select(Session).where(Session.user_id == user.id).order_by(Session.created_at.desc())
     ).all()
     completed = [s for s in sessions if s.status == SessionStatus.complete]
+    # Completed sessions that actually produced a trustworthy score (untrustworthy
+    # clips store NULL and must not drag down or spike averages/trends).
+    scored = [s for s in completed if s.overall_score is not None]
 
     # Recent (any status, so processing sessions show too).
     recent = [
@@ -46,10 +49,10 @@ def get_stats(db: DbSession = Depends(get_db), user: User = Depends(get_current_
         for s in sessions[:8]
     ]
 
-    # Score trend over time (oldest -> newest).
+    # Score trend over time (oldest -> newest); scoreless sessions are omitted.
     trend = [
         StatPoint(created_at=s.created_at, score=s.overall_score)
-        for s in sorted(completed, key=lambda x: x.created_at)
+        for s in sorted(scored, key=lambda x: x.created_at)
     ]
 
     # Exercise breakdown.
@@ -75,16 +78,21 @@ def get_stats(db: DbSession = Depends(get_db), user: User = Depends(get_current_
         .group_by(ProgressSnapshot.exercise_key)
     ).all()
     personal_bests = sorted(
-        (StatBest(exercise_key=k, exercise_name=names.get(k, k), best_score=round(v, 1)) for k, v in best_rows),
+        (
+            StatBest(exercise_key=k, exercise_name=names.get(k, k), best_score=round(v, 1))
+            for k, v in best_rows
+            if v is not None
+        ),
         key=lambda b: b.best_score,
         reverse=True,
     )
 
-    # This week.
+    # This week (count all completed; average over scored only).
     week_ago = datetime.now(timezone.utc) - timedelta(days=7)
     week = [s for s in completed if s.created_at and _aware(s.created_at) >= week_ago]
-    week_avg = round(sum(s.overall_score for s in week) / len(week), 1) if week else 0.0
-    avg = round(sum(s.overall_score for s in completed) / len(completed), 1) if completed else 0.0
+    week_scored = [s for s in week if s.overall_score is not None]
+    week_avg = round(sum(s.overall_score for s in week_scored) / len(week_scored), 1) if week_scored else 0.0
+    avg = round(sum(s.overall_score for s in scored) / len(scored), 1) if scored else 0.0
 
     return StatsOut(
         total_sessions=len(sessions),

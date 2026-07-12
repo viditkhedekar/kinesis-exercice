@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useRef, useState } from "react";
 import { useAuth } from "@/components/AuthProvider";
 import { useTheme } from "@/components/ThemeProvider";
-import LogoMark from "@/components/Logo";
+import LogoMark, { LogoFull, Wordmark } from "@/components/Logo";
 import InteractiveDemo from "@/components/demo/InteractiveDemo";
 
 const EXERCISES = [
@@ -14,7 +14,7 @@ const EXERCISES = [
 
 const HOW = [
   ["Upload", "Record a set using your phone and upload the video."],
-  ["Analyse", "Kinesis detects body landmarks, identifies repetitions and measures key movement metrics."],
+  ["Analyse", "physIQal detects body landmarks, identifies repetitions and measures key movement metrics."],
   ["Review", "Explore an interactive report with video playback, technique scores, joint data and coaching recommendations."],
 ];
 
@@ -58,7 +58,7 @@ export default function Landing() {
           <div className="flex items-center gap-8">
             <Link href="/" className="flex items-center gap-2">
               <LogoMark size={26} />
-              <span className="font-semibold tracking-tight text-[15px]">Kinesis</span>
+              <Wordmark className="text-[15px]" />
             </Link>
             <nav className="hidden md:flex items-center gap-6 text-[13px] text-muted">
               <a href="#features" className="hover:text-fg transition">Features</a>
@@ -103,15 +103,8 @@ export default function Landing() {
           {/* Brand moment — the full logo, framed so it reads on any theme */}
           <div className="relative mx-auto w-full max-w-md">
             <div className="pointer-events-none absolute -inset-6 opacity-70 [background:radial-gradient(60%_50%_at_50%_35%,rgb(var(--fg)/0.08),transparent_70%)]" />
-            <div className="relative aspect-square overflow-hidden rounded-2xl border border-border bg-black ring-1 ring-white/5">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src="/kinesis-logo.png"
-                alt="Kinesis — Move better. Be better."
-                width={720}
-                height={720}
-                className="h-full w-full object-contain"
-              />
+            <div className="relative aspect-square grid place-items-center overflow-hidden rounded-2xl border border-border bg-black ring-1 ring-white/5">
+              <LogoFull />
             </div>
           </div>
         </div>
@@ -122,7 +115,7 @@ export default function Landing() {
         <div className="eyebrow mb-2">Trusted analysis</div>
         <h2 className="t-h2 max-w-2xl">Designed for athletes, coaches and anyone looking for objective feedback on movement quality.</h2>
         <p className="text-muted text-[15px] leading-relaxed max-w-2xl mt-4">
-          Kinesis analyses joint positions throughout each repetition to measure range of motion,
+          physIQal analyses joint positions throughout each repetition to measure range of motion,
           symmetry, tempo and exercise-specific technique. Every recommendation is linked back to
           measurable data, so you can see exactly why feedback was generated.
         </p>
@@ -158,7 +151,7 @@ export default function Landing() {
               <span className="h-2.5 w-2.5 rounded-full bg-border-strong" />
             </span>
             <div className="mx-auto flex items-center gap-1.5 rounded-[6px] bg-surface-2 px-3 h-6 text-[12px] text-faint font-mono">
-              app.kinesis.io / analysis / squat
+              app.physiqal.io / analysis / squat
             </div>
           </div>
           <div className="p-4 sm:p-5">
@@ -174,7 +167,7 @@ export default function Landing() {
       <section id="features" className="mx-auto max-w-6xl px-6 py-12 scroll-mt-16">
         <div className="eyebrow mb-2">Built for real training</div>
         <h2 className="t-h2 max-w-2xl">
-          Rather than assigning a single score, Kinesis evaluates each repetition individually and
+          Rather than assigning a single score, physIQal evaluates each repetition individually and
           highlights where technique changes during a set.
         </h2>
         <div className="mt-8">
@@ -199,12 +192,12 @@ export default function Landing() {
         <p className="text-muted text-[13px] mt-4">More exercises can be added as the movement engine expands.</p>
       </section>
 
-      {/* Why Kinesis */}
+      {/* Why physIQal */}
       <section className="mx-auto max-w-3xl px-6 py-16">
-        <div className="eyebrow mb-2">Why Kinesis?</div>
+        <div className="eyebrow mb-2">Why physIQal?</div>
         <h2 className="t-h2">Traditional video review is slow and subjective.</h2>
         <p className="text-muted text-[15px] leading-relaxed mt-4">
-          Kinesis provides consistent analysis that can be reviewed immediately after a training
+          physIQal provides consistent analysis that can be reviewed immediately after a training
           session. Every recommendation is linked to measurable movement rather than generic advice,
           making it easier to identify recurring issues and monitor improvement over time.
         </p>
@@ -270,7 +263,7 @@ export default function Landing() {
         <div className="mx-auto max-w-6xl px-6 py-8 flex flex-col sm:flex-row items-center justify-between gap-3 text-[13px] text-muted">
           <div className="flex items-center gap-2">
             <LogoMark size={20} />
-            Kinesis — movement intelligence
+            physIQal — intelligence behind every movement
           </div>
           <div className="flex items-center gap-6">
             <a href="#features" className="hover:text-fg transition">Features</a>

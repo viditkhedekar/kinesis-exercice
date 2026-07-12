@@ -1,6 +1,12 @@
 key: pushup
 name: Push-Up
 
+filming:
+  - "Film side-on at roughly floor level."
+  - "Frame your whole body, head to feet."
+  - "Keep the camera still — use a tripod or a ledge."
+  - "Do full-range reps at a steady tempo."
+
 metrics:
   elbow: { type: angle, points: [shoulder, elbow, wrist], sided: true }   # small = bottom
   body_line: { type: angle, points: [shoulder, hip, ankle], sided: true } # ~180 = straight

@@ -9,6 +9,7 @@ import type {
   LiveScoreResult,
   PoseFrame,
   ProgressPoint,
+  Quota,
   Report,
   SessionSummary,
   Stats,
@@ -75,6 +76,9 @@ export const api = {
   stats: () => req<Stats>("/stats"),
   sessions: (exercise?: string) =>
     req<SessionSummary[]>(`/sessions${exercise ? `?exercise=${exercise}` : ""}`),
+  quota: () => req<Quota>("/sessions/quota"),
+  deleteVideo: (id: number) => req<SessionSummary>(`/sessions/${id}/video`, { method: "DELETE" }),
+  deleteSession: (id: number) => req<void>(`/sessions/${id}`, { method: "DELETE" }),
   status: (id: number) => req<JobStatus>(`/sessions/${id}/status`),
   report: (id: number) => req<Report>(`/sessions/${id}/report`),
   landmarks: (id: number) => req<Landmarks>(`/sessions/${id}/landmarks`),
@@ -92,7 +96,17 @@ export const api = {
       body: form,
       credentials: "include",
     });
-    if (!res.ok) throw new ApiError(res.status, `Upload failed (${res.status})`);
+    if (!res.ok) {
+      // Surface the server's detail (e.g. the history-quota message) when present.
+      let detail = `Upload failed (${res.status})`;
+      try {
+        const body = await res.json();
+        if (typeof body.detail === "string") detail = body.detail;
+      } catch {
+        /* ignore */
+      }
+      throw new ApiError(res.status, detail);
+    }
     return res.json();
   },
 

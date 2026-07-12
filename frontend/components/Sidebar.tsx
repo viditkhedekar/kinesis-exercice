@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useAuth } from "./AuthProvider";
-import LogoMark from "./Logo";
+import LogoMark, { Wordmark } from "./Logo";
 import ThemeToggle from "./ThemeToggle";
 
 const NAV = [
@@ -30,7 +30,7 @@ export default function Sidebar({
     <div className="flex h-full flex-col gap-1 p-3">
       <Link href="/dashboard" onClick={onNavigate} className="flex items-center gap-2 px-2 py-3">
         <LogoMark size={28} />
-        <span className="font-semibold tracking-tight">Kinesis</span>
+        <Wordmark className="text-[15px]" />
       </Link>
 
       <button

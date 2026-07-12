@@ -1,6 +1,6 @@
 "use client";
 
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import {
   CartesianGrid,
@@ -12,8 +12,10 @@ import {
   YAxis,
 } from "recharts";
 import SessionCard from "@/components/SessionCard";
+import { useToast } from "@/components/Toaster";
 import { EmptyState, PageHeader, Skeleton } from "@/components/ui";
-import { api } from "@/lib/api";
+import { api, ApiError } from "@/lib/api";
+import type { SessionSummary } from "@/lib/types";
 
 type Tab = "history" | "progress";
 
@@ -59,10 +61,34 @@ export default function HistoryPage() {
 }
 
 function HistoryTab({ exercise }: { exercise: string }) {
+  const qc = useQueryClient();
+  const { toast } = useToast();
   const { data, isLoading } = useQuery({
     queryKey: ["sessions", exercise],
     queryFn: () => api.sessions(exercise || undefined),
   });
+  const quota = useQuery({ queryKey: ["quota"], queryFn: api.quota });
+
+  // Deletions touch history, the quota meter, progress and dashboard stats.
+  const refresh = () => {
+    for (const k of [["sessions"], ["quota"], ["progress"], ["stats"]]) {
+      qc.invalidateQueries({ queryKey: k });
+    }
+  };
+  const onError = (e: unknown) => toast(e instanceof ApiError ? e.message : "Delete failed", "error");
+
+  const deleteVideo = useMutation({ mutationFn: (id: number) => api.deleteVideo(id), onSuccess: refresh, onError });
+  const deleteSession = useMutation({ mutationFn: (id: number) => api.deleteSession(id), onSuccess: refresh, onError });
+  const busy = deleteVideo.isPending || deleteSession.isPending;
+
+  const handleDeleteVideo = (s: SessionSummary) => {
+    if (window.confirm(`Delete the video for session #${s.id}? The analysis and Ghost Replay are kept (drops to a ¼ slot).`))
+      deleteVideo.mutate(s.id);
+  };
+  const handleDeleteSession = (s: SessionSummary) => {
+    if (window.confirm(`Permanently delete session #${s.id}? This removes the video and its analysis.`))
+      deleteSession.mutate(s.id);
+  };
 
   if (isLoading)
     return (
@@ -80,8 +106,42 @@ function HistoryTab({ exercise }: { exercise: string }) {
     );
 
   return (
-    <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-      {data.map((s) => <SessionCard key={s.id} s={s} />)}
+    <div className="space-y-4">
+      {quota.data && <QuotaMeter used={quota.data.used} limit={quota.data.limit} analysisOnly={quota.data.analysis_only_count} />}
+      <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        {data.map((s) => (
+          <SessionCard
+            key={s.id}
+            s={s}
+            busy={busy}
+            onDeleteVideo={handleDeleteVideo}
+            onDeleteSession={handleDeleteSession}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function QuotaMeter({ used, limit, analysisOnly }: { used: number; limit: number; analysisOnly: number }) {
+  const pct = Math.min(100, Math.round((used / limit) * 100));
+  const full = used + 1 > limit;
+  return (
+    <div className="card p-4">
+      <div className="flex items-center justify-between gap-3 text-sm">
+        <span className="font-medium">History storage</span>
+        <span className="font-mono tabular-nums text-muted">
+          {used.toFixed(2).replace(/\.00$/, "")} / {limit} slots
+        </span>
+      </div>
+      <div className="mt-2 h-2 rounded-full bg-surface-2 overflow-hidden">
+        <div className={`h-full ${full ? "bg-bad" : "bg-accent"} transition-all`} style={{ width: `${pct}%` }} />
+      </div>
+      <p className="text-xs text-muted mt-2">
+        Each video uses 1 slot; deleting a video but keeping its analysis (incl. Ghost Replay) uses ¼ slot.
+        {analysisOnly > 0 && ` ${analysisOnly} analysis-only kept.`}
+        {full && " Your history is full — delete a session or a few videos to upload more."}
+      </p>
     </div>
   );
 }
@@ -99,7 +159,7 @@ function ProgressTab({ exercise }: { exercise: string }) {
       {chart.length === 0 ? (
         <EmptyState
           title="Your progress chart starts here"
-          description="Analyze a few clips of the same lift and Kinesis will chart how your technique and best rep trend over time."
+          description="Analyze a few clips of the same lift and physIQal will chart how your technique and best rep trend over time."
           action={{ label: "Upload a set", href: "/upload" }}
         />
       ) : (

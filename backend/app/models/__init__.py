@@ -1,4 +1,4 @@
-"""SQLAlchemy ORM models for Kinesis.
+"""SQLAlchemy ORM models for physIQal.
 
 Single implicit user (no auth in this build). The graph:
 
@@ -97,7 +97,9 @@ class Session(Base):
     # Overall technique score (0..100) + a JSON summary (key metrics, strengths,
     # grade, view) computed at analysis time and rendered on the report. Live
     # sessions additionally store sets/time_under_tension/duration_s here.
-    overall_score: Mapped[float] = mapped_column(Float, default=0.0)
+    # NULL means "no trustworthy score" — e.g. the clip didn't show the selected
+    # exercise (no reps) or no subject was visible; the UI shows "--" for these.
+    overall_score: Mapped[float | None] = mapped_column(Float, nullable=True, default=0.0)
     summary: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     exercise: Mapped[Exercise] = relationship(back_populates="sessions")
@@ -119,6 +121,17 @@ class Session(Base):
     progress: Mapped[ProgressSnapshot | None] = relationship(
         back_populates="session", uselist=False, cascade="all, delete-orphan"
     )
+
+    @property
+    def has_video(self) -> bool:
+        """The raw uploaded clip is still stored (counts as a full history slot)."""
+        return self.video is not None
+
+    @property
+    def has_analysis(self) -> bool:
+        """Landmark analysis is retained (powers the report + Ghost Replay). When
+        the video has been deleted this is what a session keeps — a quarter slot."""
+        return self.artifact is not None
 
 
 class Video(Base):
@@ -221,8 +234,12 @@ class ProgressSnapshot(Base):
     session_id: Mapped[int] = mapped_column(ForeignKey("sessions.id"), unique=True)
     exercise_key: Mapped[str] = mapped_column(ForeignKey("exercises.key"))
     rep_count: Mapped[int] = mapped_column(Integer, default=0)
-    avg_score: Mapped[float] = mapped_column(Float, default=0.0)
-    best_score: Mapped[float] = mapped_column(Float, default=0.0)
+    # NULL when the session has no trustworthy score (see Session.overall_score);
+    # such sessions are omitted from the progress chart rather than plotted at 0/100.
+    # No column default: a Python-side default would be re-applied on INSERT even
+    # when we explicitly assign None, silently turning a scoreless snapshot into 0.
+    avg_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    best_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
     session: Mapped[Session] = relationship(back_populates="progress")

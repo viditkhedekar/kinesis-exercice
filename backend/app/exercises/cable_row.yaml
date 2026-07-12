@@ -1,6 +1,12 @@
 key: cable_row
 name: Seated Cable Row
 
+filming:
+  - "Film side-on (90°) so your back angle is visible."
+  - "Keep your full torso and arms in the frame."
+  - "Stay seated square to the machine — don't twist."
+  - "Row through your normal full range of motion."
+
 metrics:
   elbow: { type: angle, points: [shoulder, elbow, wrist], sided: true }    # small = pulled in
   torso: { type: segment_vertical_angle, points: [hip, shoulder], sided: true }

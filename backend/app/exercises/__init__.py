@@ -67,6 +67,9 @@ class ExerciseConfig(BaseModel):
     rep: RepConfig
     rules: list[RuleConfig] = Field(default_factory=list)
     score_base: float = 100.0
+    # Short "how to film this" pointers shown on the upload screen so the clip is
+    # framed well enough to analyse (camera angle, positioning, what to do).
+    filming: list[str] = Field(default_factory=list)
 
 
 def _load_file(path: Path) -> ExerciseConfig:

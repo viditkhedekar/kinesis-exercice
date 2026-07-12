@@ -1,6 +1,12 @@
 key: deadlift
 name: Deadlift
 
+filming:
+  - "Film side-on (90°) so the hip hinge is visible."
+  - "Frame from your head down to the barbell."
+  - "Keep the camera still — use a tripod or a ledge."
+  - "Do your normal reps at a steady tempo."
+
 # Spine/shoulder rounding cues are 2D side-view approximations — pair with a
 # coach's eye. Thresholds reflect common barbell coaching guidance.
 metrics:

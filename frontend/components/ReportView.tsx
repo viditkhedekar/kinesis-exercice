@@ -6,13 +6,16 @@ import { useRef, useState } from "react";
 import { api } from "@/lib/api";
 import { scoreColor } from "@/lib/poseOverlay";
 import type { RepFault } from "@/lib/types";
+import { useUploadGuide } from "@/lib/uploadGuide";
 import { AngleChart, RomBars } from "./charts";
 import CoachPanel from "./CoachPanel";
 import FaultDeck from "./FaultDeck";
 import FaultTimeline from "./FaultTimeline";
+import GuidePopup from "./GuidePopup";
 import InsightCards from "./InsightCards";
 import Panel from "./Panel";
-import PlayerOverlay from "./PlayerOverlay";
+import PlayerOverlay, { type PlayerHandle } from "./PlayerOverlay";
+import PrioritiesSpotlight from "./PrioritiesSpotlight";
 import { Skeleton } from "./ui";
 
 const SEV_DOT: Record<string, string> = {
@@ -22,11 +25,13 @@ const SEV_DOT: Record<string, string> = {
 };
 
 export default function ReportView({ sessionId }: { sessionId: number }) {
-  const videoRef = useRef<HTMLVideoElement>(null);
+  const playerRef = useRef<PlayerHandle>(null);
   const [frame, setFrame] = useState(0);
   const [showGhost, setShowGhost] = useState(false);
   const [seriesKey, setSeriesKey] = useState<string>("");
 
+  const { active: guideActive } = useUploadGuide();
+  const [guideDismissed, setGuideDismissed] = useState(false);
   const report = useQuery({ queryKey: ["report", sessionId], queryFn: () => api.report(sessionId) });
   const landmarks = useQuery({ queryKey: ["landmarks", sessionId], queryFn: () => api.landmarks(sessionId) });
   const metrics = useQuery({ queryKey: ["metrics", sessionId], queryFn: () => api.metrics(sessionId) });
@@ -42,16 +47,12 @@ export default function ReportView({ sessionId }: { sessionId: number }) {
   const totalFrames = lm?.frames.length ?? 0;
   const ghostAvailable = ghost.data?.available ?? false;
   const activeSeries = seriesKey || metrics.data?.series[0]?.key || "";
+  const hasVideo = !!r.video;
 
   const faults: RepFault[] = r.reps.flatMap((rep) => rep.faults.map((f) => ({ ...f, rep_index: rep.index })));
   const romData = r.reps.map((rep) => ({ rep: `${rep.index}`, rom: Math.round(rep.rom ?? 0), color: scoreColor(rep.score) }));
 
-  const seek = (t: number) => {
-    if (videoRef.current) {
-      videoRef.current.currentTime = t;
-      videoRef.current.pause();
-    }
-  };
+  const seek = (t: number) => playerRef.current?.seek(t);
 
   return (
     <div className="space-y-4">
@@ -65,12 +66,33 @@ export default function ReportView({ sessionId }: { sessionId: number }) {
           </div>
         </div>
         <div className="flex items-stretch divide-x divide-border rounded-[8px] border border-border overflow-hidden">
-          <Metric label="Score" value={r.overall_score.toFixed(0)} color={scoreColor(r.overall_score)} />
+          <Metric
+            label="Score"
+            value={r.overall_score != null ? r.overall_score.toFixed(0) : "--"}
+            color={r.overall_score != null ? scoreColor(r.overall_score) : undefined}
+          />
           <Metric label="Grade" value={r.grade || "—"} />
           <Metric label="Reps" value={`${r.reps.length}`} />
           {km && <Metric label="View" value={km.view} />}
         </div>
       </div>
+
+      {/* Data-quality / wrong-exercise flag — shown prominently before anything else. */}
+      {r.warning && (
+        <div className="card p-4 sm:p-5 border-bad/50 bg-bad/[0.06]">
+          <div className="flex items-start gap-3">
+            <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-bad/15 text-bad font-bold">!</span>
+            <div className="min-w-0">
+              <h2 className="font-semibold text-bad">{r.warning.title}</h2>
+              <p className="text-sm text-fg/90 mt-1">{r.warning.message}</p>
+              <Link href="/upload" className="btn-ghost h-8 mt-3 inline-flex">Re-upload a clip</Link>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Priorities + fixes — the headline of the report, above the video. */}
+      <PrioritiesSpotlight priorities={r.priorities} fps={fps} onSeek={seek} />
 
       {r.insights.length > 0 && <InsightCards insights={r.insights} />}
 
@@ -79,13 +101,14 @@ export default function ReportView({ sessionId }: { sessionId: number }) {
         <div className="lg:col-span-2 space-y-3">
           {lm && (
             <PlayerOverlay
+              ref={playerRef}
               sessionId={sessionId}
+              hasVideo={hasVideo}
               landmarks={lm}
               reps={r.reps}
               faults={faults}
               ghost={ghost.data ?? null}
               showGhost={showGhost}
-              videoRef={videoRef}
               onFrame={setFrame}
             />
           )}
@@ -121,12 +144,6 @@ export default function ReportView({ sessionId }: { sessionId: number }) {
               )}
             </Panel>
           )}
-          <FaultDeck
-            title="Priorities"
-            tabs={[{ key: "priorities", label: "Priorities", faults: r.priorities, emptyText: "No priority issues — nice work." }]}
-            fps={fps}
-            onSeek={seek}
-          />
           <CoachPanel report={r} />
         </div>
       </div>
@@ -207,14 +224,27 @@ export default function ReportView({ sessionId }: { sessionId: number }) {
       </Panel>
 
       <FaultDeck
-        title="Detected issues"
+        title="All detected issues"
         tabs={[
-          { key: "priorities", label: "Priorities", faults: r.priorities, emptyText: "No priority issues — nice work." },
           { key: "all", label: "All issues", faults: r.fault_groups, emptyText: "No technique faults detected — clean, consistent reps." },
         ]}
         fps={fps}
         onSeek={seek}
       />
+
+      {/* First-runs guide: point out the priorities + fixes on arrival. */}
+      {guideActive && !guideDismissed && (
+        <GuidePopup
+          step={3}
+          total={3}
+          title="Here's your analysis"
+          cta="Got it"
+          onDismiss={() => setGuideDismissed(true)}
+        >
+          Your top priorities and fixes are at the top — flick through them and tap a fix for more
+          detail. The video and full breakdown are below.
+        </GuidePopup>
+      )}
     </div>
   );
 }

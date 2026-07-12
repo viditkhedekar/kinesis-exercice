@@ -1,6 +1,12 @@
 key: lateral_raise
 name: Dumbbell Lateral Raise
 
+filming:
+  - "Film front-on so both arms are visible."
+  - "Stand still and face the camera."
+  - "Raise both arms together to the same height."
+  - "Keep your whole upper body in the frame."
+
 metrics:
   abduction: { type: angle, points: [hip, shoulder, elbow], sided: true }  # large = raised
   elbow: { type: angle, points: [shoulder, elbow, wrist], sided: true }
