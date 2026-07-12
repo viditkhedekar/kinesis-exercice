@@ -15,7 +15,7 @@ from app.services.biomechanics import compute_metrics
 from app.services.pose import PoseResult
 from app.services.reps import detect_reps
 from app.services.rules import evaluate_session
-from app.workers.tasks import run_pipeline_from_landmarks
+from app.services.pipeline import run_pipeline_from_landmarks
 from tests.synthetic import knee_series, squat_landmarks
 
 FPS = 30.0

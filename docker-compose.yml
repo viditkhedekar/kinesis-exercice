@@ -15,48 +15,18 @@ services:
       timeout: 3s
       retries: 10
 
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-
   backend:
     build: ./backend
     depends_on:
       postgres:
         condition: service_healthy
-      redis:
-        condition: service_healthy
     environment:
       KINESIS_DATABASE_URL: postgresql+psycopg2://kinesis:kinesis@postgres:5432/kinesis
-      KINESIS_REDIS_URL: redis://redis:6379/0
       KINESIS_STORAGE_DIR: /data/kinesis
       KINESIS_COACH_PROVIDER: ${KINESIS_COACH_PROVIDER:-echo}
       KINESIS_ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     ports:
       - "8000:8000"
-    volumes:
-      - mediadata:/data/kinesis
-
-  worker:
-    build: ./backend
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    command: sh -c "python -m app.init_db && celery -A app.workers.celery_app.celery_app worker --loglevel=info --concurrency=2"
-    environment:
-      KINESIS_DATABASE_URL: postgresql+psycopg2://kinesis:kinesis@postgres:5432/kinesis
-      KINESIS_REDIS_URL: redis://redis:6379/0
-      KINESIS_STORAGE_DIR: /data/kinesis
-      KINESIS_COACH_PROVIDER: ${KINESIS_COACH_PROVIDER:-echo}
-      KINESIS_ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     volumes:
       - mediadata:/data/kinesis
 

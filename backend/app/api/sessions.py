@@ -75,12 +75,20 @@ def create_session(
     db.add(Video(session_id=session.id, path=path, filename=file.filename or "video.mp4"))
     db.add(AnalysisJob(session_id=session.id, stage=JobStage.queued, progress=0.0))
     db.commit()
+
+    # Run the analysis pipeline synchronously, in-process — no task queue. The
+    # request blocks until the full report is persisted, then returns the
+    # completed session so the client can render the analysis immediately.
+    from app.services.pipeline import run_pipeline
+
+    try:
+        run_pipeline(session.id)
+    except Exception as exc:  # noqa: BLE001
+        # run_pipeline has already marked the session/job failed in its own
+        # transaction; surface the failure to the client.
+        raise HTTPException(500, f"Analysis failed: {exc}")
+
     db.refresh(session)
-
-    # Enqueue async analysis (import here to avoid loading Celery for read-only requests).
-    from app.workers.tasks import analyze_session
-
-    analyze_session.delay(session.id)
     return SessionOut.model_validate(session)
 
 

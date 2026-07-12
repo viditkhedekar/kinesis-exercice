@@ -23,6 +23,7 @@ export default function UploadPage() {
   // Default exercise = first of the user's preferred, else first available.
   const preferred = user?.prefs?.exercises ?? [];
   const selected = exerciseKey || preferred[0] || exercises?.[0]?.key || "";
+  const selectedName = exercises?.find((e) => e.key === selected)?.name ?? "exercise";
 
   // Pick up a file dropped on the dashboard, and an exercise passed via ?exercise=
   // (e.g. from the ⌘K command palette).
@@ -37,13 +38,19 @@ export default function UploadPage() {
     if (!file || !selected) return;
     setBusy(true);
     try {
+      // Analysis now runs synchronously on the backend: this request blocks
+      // until the full report is ready, then we go straight to it (no polling).
       const session = await api.upload(selected, file);
-      router.push(`/sessions/${session.id}/processing`);
+      router.replace(`/sessions/${session.id}`);
     } catch (e) {
-      toast(e instanceof ApiError ? e.message : "Upload failed", "error");
+      toast(e instanceof ApiError ? e.message : "Analysis failed", "error");
       setBusy(false);
     }
   }
+
+  // While the analysis request is in flight, show a waiting screen with an
+  // estimate instead of a queued-job poller.
+  if (busy) return <Analyzing exerciseName={selectedName} />;
 
   return (
     <div className="max-w-2xl">
@@ -91,6 +98,54 @@ export default function UploadPage() {
         <p className="text-xs text-muted text-center">
           Film side-on for squats/deadlifts and front-on for curls/raises for the most reliable results.
         </p>
+      </div>
+    </div>
+  );
+}
+
+// Shown while the synchronous analysis request is in flight. There's no queue to
+// poll — we just wait for the response, so this gives the user a time estimate
+// and something to look forward to.
+function Analyzing({ exerciseName }: { exerciseName: string }) {
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => setElapsed((s) => s + 1), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  return (
+    <div className="max-w-lg mx-auto">
+      <div className="card p-8">
+        <div className="flex items-center gap-3 mb-6">
+          <span className="relative grid h-9 w-9 place-items-center">
+            <span className="absolute inset-0 rounded-full border-2 border-border" />
+            <span className="absolute inset-0 rounded-full border-2 border-transparent border-t-accent animate-spin" />
+          </span>
+          <div className="min-w-0">
+            <div className="text-sm font-medium truncate">Analyzing your {exerciseName}…</div>
+            <div className="label mt-0.5">
+              Estimated time ~20–40s · {elapsed}s elapsed
+            </div>
+          </div>
+        </div>
+
+        {/* Indeterminate progress — the request completes when the report is ready. */}
+        <div className="h-1.5 rounded-full bg-surface-2 overflow-hidden mb-2">
+          <div className="h-full w-1/3 bg-accent/60 skeleton" />
+        </div>
+        <p className="text-muted text-xs">
+          Keep this tab open — your report opens automatically when it&apos;s done.
+        </p>
+
+        {/* While-you-wait guides prompt. Intentionally blank for now. */}
+        <div className="mt-6 border-t border-border pt-6">
+          <h2 className="text-sm font-medium">
+            While you wait — want to see some guides about exercise form and videos?
+          </h2>
+          <div className="mt-3 grid h-40 place-items-center rounded-xl border border-dashed border-border">
+            <span className="text-xs text-muted">Guides coming soon</span>
+          </div>
+        </div>
       </div>
     </div>
   );

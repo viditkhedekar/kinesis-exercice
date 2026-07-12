@@ -44,7 +44,7 @@ from app.services.pose.landmarks import NUM_LANDMARKS
 from app.services.reps import detect_reps
 from app.services.rules import evaluate_session
 from app.services.storage import get_storage
-from app.workers.tasks import run_pipeline_from_landmarks
+from app.services.pipeline import run_pipeline_from_landmarks
 
 router = APIRouter(prefix="/sessions/live", tags=["live"])
 

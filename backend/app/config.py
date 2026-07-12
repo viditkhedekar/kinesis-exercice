@@ -16,7 +16,6 @@ class Settings(BaseSettings):
 
     # --- Infrastructure ---
     database_url: str = "postgresql+psycopg2://kinesis:kinesis@localhost:5432/kinesis"
-    redis_url: str = "redis://localhost:6379/0"
 
     # --- Storage ---
     # Root directory for uploaded videos and analysis artifacts (FS storage backend).

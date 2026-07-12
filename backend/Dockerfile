@@ -26,5 +26,5 @@ RUN mkdir -p app/services/pose/models && \
 
 ENV PYTHONUNBUFFERED=1
 
-# Default command is the API; the worker overrides this in docker-compose.
+# Analysis runs synchronously inside the API process — no separate worker.
 CMD ["sh", "-c", "python -m app.init_db && uvicorn app.main:app --host 0.0.0.0 --port 8000"]

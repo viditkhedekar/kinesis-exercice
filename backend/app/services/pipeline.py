@@ -1,9 +1,11 @@
-"""The analysis pipeline, orchestrated as a Celery task.
+"""The analysis pipeline, run synchronously in-process.
 
-``analyze_session`` runs the full deterministic pipeline for one uploaded video,
-persisting results and advancing ``AnalysisJob.stage``/``progress`` so the UI can
-show real status. The body is also callable directly (``run_pipeline``) for
-local debugging without a broker.
+``run_pipeline`` runs the full deterministic pipeline for one uploaded video,
+persisting results and advancing ``AnalysisJob.stage``/``progress``. It is called
+directly from the upload request handler (no task queue / broker) so the completed
+analysis is available as soon as the request returns.
+
+``run_pipeline_from_landmarks`` (steps 2–6) is shared with Live Camera Mode.
 """
 from __future__ import annotations
 
@@ -40,7 +42,6 @@ from app.services.progress import upsert_progress
 from app.services.reps import RepWindow, detect_reps
 from app.services.rules import evaluate_session
 from app.services.storage import get_storage
-from app.workers.celery_app import celery_app
 
 
 def _set_stage(db, job: AnalysisJob | None, stage: JobStage, progress: float) -> None:
@@ -160,7 +161,7 @@ def run_pipeline_from_landmarks(
 ) -> None:
     """Steps 2–6 of the analysis pipeline, driven purely by a landmark array.
 
-    Shared by the video-upload worker and Live Camera Mode. The only difference
+    Shared by the video-upload handler and Live Camera Mode. The only difference
     for live sessions is ``set_bounds`` (rep detection is run per set slice) and
     ``extra_summary`` (live-only fields — sets, time-under-tension, duration —
     merged into ``Session.summary``). With no ``set_bounds`` the whole buffer is
@@ -290,8 +291,3 @@ def run_pipeline_from_landmarks(
 
     session.status = SessionStatus.complete
     _set_stage(db, job, JobStage.done, 1.0)
-
-
-@celery_app.task(name="analyze_session")
-def analyze_session(session_id: int) -> None:
-    run_pipeline(session_id)
