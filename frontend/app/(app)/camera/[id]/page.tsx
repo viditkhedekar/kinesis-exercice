@@ -8,9 +8,15 @@ import LiveHUD, { type LiveStats } from "@/components/live/LiveHUD";
 import RestTimer from "@/components/live/RestTimer";
 import { useToast } from "@/components/Toaster";
 import { api, ApiError } from "@/lib/api";
-import type { LiveCue, Rep } from "@/lib/types";
+import { evaluateLiveCues } from "@/lib/live/liveCoach";
+import type { RepMetrics } from "@/lib/live/repMetrics";
+import type { LiveCue } from "@/lib/types";
 
 type Phase = "loading" | "active" | "resting" | "finishing";
+
+const SEV_RANK: Record<LiveCue["severity"], number> = { minor: 0, moderate: 1, severe: 2 };
+const CUE_DWELL_MS = 2500; // hold a cue at least this long before a same/lower one replaces it
+const CUE_CLEAR_MS = 5000; // auto-dismiss a cue after this if nothing new arrives
 
 export default function LiveSessionPage() {
   const params = useParams();
@@ -37,46 +43,60 @@ export default function LiveSessionPage() {
   const [tracking, setTracking] = useState(true);
   const [nowTick, setNowTick] = useState(0);
 
-  // Session-wide rep aggregation. Current set is live; ended sets are folded in.
-  const [currentSetReps, setCurrentSetReps] = useState<Rep[]>([]);
-  const completed = useRef({ reps: 0, scoreSum: 0, scoreCount: 0, sets: 0 });
+  // Rep counting is fully client-side (instant); the authoritative scored review
+  // is produced server-side at /live/finish.
+  const [repsTotal, setRepsTotal] = useState(0);
+  const [repsThisSet, setRepsThisSet] = useState(0);
+  const [setsCompleted, setSetsCompleted] = useState(0);
   const sessionStartRef = useRef(0);
   const setStartRef = useRef(0);
 
-  // Scoring request de-duplication.
-  const inFlight = useRef(false);
-  const pending = useRef(false);
+  // Coaching-cue dwell so cues don't flicker frame-to-frame.
+  const cueMeta = useRef({ at: 0, sev: -1 });
+  const clearTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const capturing = phase === "active" && !paused;
 
-  // 1 Hz clock for the elapsed/set-time tiles.
+  // 2 Hz clock for the elapsed/set-time tiles.
   useEffect(() => {
     const id = setInterval(() => setNowTick(performance.now()), 500);
     return () => clearInterval(id);
   }, []);
 
-  const scoreCurrentSet = useCallback(async () => {
-    if (inFlight.current) {
-      pending.current = true;
-      return;
-    }
-    inFlight.current = true;
-    try {
-      const { frames, fps } = cameraRef.current!.getCurrentSetFrames();
-      if (frames.length < 3) return;
-      const res = await api.liveScore(sessionId, fps, frames);
-      setCurrentSetReps(res.reps);
-      if (res.latest_cue) setCue(res.latest_cue);
-    } catch {
-      /* transient scoring failure — keep going, next rep retries */
-    } finally {
-      inFlight.current = false;
-      if (pending.current) {
-        pending.current = false;
-        scoreCurrentSet();
-      }
-    }
-  }, [sessionId]);
+  useEffect(() => () => {
+    if (clearTimer.current) clearTimeout(clearTimer.current);
+  }, []);
+
+  const showCue = useCallback((c: LiveCue) => {
+    const now = performance.now();
+    const sev = SEV_RANK[c.severity] ?? 0;
+    // Keep the current cue for a minimum dwell unless a more severe one arrives.
+    if (now - cueMeta.current.at < CUE_DWELL_MS && sev <= cueMeta.current.sev) return;
+    cueMeta.current = { at: now, sev };
+    setCue(c);
+    if (clearTimer.current) clearTimeout(clearTimer.current);
+    clearTimer.current = setTimeout(() => {
+      setCue(null);
+      cueMeta.current = { at: 0, sev: -1 };
+    }, CUE_CLEAR_MS);
+  }, []);
+
+  const clearCue = useCallback(() => {
+    if (clearTimer.current) clearTimeout(clearTimer.current);
+    cueMeta.current = { at: 0, sev: -1 };
+    setCue(null);
+  }, []);
+
+  // Fires once per completed rep, from the camera's hot loop.
+  const handleRepComplete = useCallback(
+    (metrics: RepMetrics) => {
+      setRepsTotal((n) => n + 1);
+      setRepsThisSet((n) => n + 1);
+      const c = evaluateLiveCues(exerciseKey, metrics);
+      if (c) showCue(c);
+    },
+    [exerciseKey, showCue],
+  );
 
   const handleReady = useCallback(() => {
     sessionStartRef.current = performance.now();
@@ -91,20 +111,16 @@ export default function LiveSessionPage() {
 
   function startRest() {
     cameraRef.current?.endSet();
-    // Fold the current set's scored reps into the completed totals.
-    const c = completed.current;
-    c.reps += currentSetReps.length;
-    c.scoreSum += currentSetReps.reduce((s, r) => s + r.score, 0);
-    c.scoreCount += currentSetReps.length;
-    c.sets += 1;
-    setCurrentSetReps([]);
-    setCue(null);
+    setSetsCompleted((n) => n + 1);
+    setRepsThisSet(0);
+    clearCue();
     setPaused(false);
     setPhase("resting");
   }
 
   function resumeFromRest() {
     setStartRef.current = performance.now();
+    setRepsThisSet(0);
     cameraRef.current?.beginSet();
     setPhase("active");
   }
@@ -130,20 +146,15 @@ export default function LiveSessionPage() {
   }
 
   // Derived stats for the HUD.
-  const c = completed.current;
-  const scoredNow = currentSetReps.reduce((s, r) => s + r.score, 0);
-  const totalScoreCount = c.scoreCount + currentSetReps.length;
-  const avgScore =
-    totalScoreCount > 0 ? (c.scoreSum + scoredNow) / totalScoreCount : null;
   const elapsed = sessionStartRef.current ? (nowTick - sessionStartRef.current) / 1000 : 0;
   const setElapsed = phase === "active" && setStartRef.current ? (nowTick - setStartRef.current) / 1000 : 0;
 
   const stats: LiveStats = {
-    reps: c.reps + currentSetReps.length,
-    sets: c.sets + (phase === "active" ? 1 : 0),
+    reps: repsTotal,
+    repsThisSet,
+    sets: setsCompleted + (phase === "active" ? 1 : 0),
     elapsed: Math.max(0, elapsed),
     setElapsed: Math.max(0, setElapsed),
-    avgScore,
     progress,
     tracking,
   };
@@ -165,7 +176,7 @@ export default function LiveSessionPage() {
             setProgress(p);
             setTracking(t);
           }}
-          onRepComplete={scoreCurrentSet}
+          onRepComplete={handleRepComplete}
         />
 
         {phase === "loading" && !error && (

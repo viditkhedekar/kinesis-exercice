@@ -71,4 +71,18 @@ rules:
     joints: [shoulder]
     params: { min_seconds: 0.8 }
 
+  - id: rom_asymmetry
+    type: rom_asymmetry
+    message: "The two arms move through different ranges, so the side delts are trained unevenly rep to rep."
+    tip: "Match the range on both arms; lighten the load if the weaker side can't reach the same height."
+    joints: [shoulder]
+    params: { metric: abduction, max_diff: 12, moderate_at: 20, severe_at: 32, unit: deg, plane: frontal }
+
+  - id: inconsistent_tempo
+    type: tempo_consistency
+    message: "Rep tempo drifts across the set — usually momentum and swing creeping in as the delts fatigue."
+    tip: "Hold a controlled up-and-down cadence; end the set when you have to swing to keep going."
+    joints: [shoulder]
+    params: { max_cv: 30, moderate_at: 42, severe_at: 62 }
+
 score_base: 100

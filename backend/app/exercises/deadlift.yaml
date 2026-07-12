@@ -65,4 +65,26 @@ rules:
     joints: [hip]
     params: { metric: hip, max_diff: 12, moderate_at: 22, severe_at: 35, unit: deg, plane: frontal }
 
+  - id: soft_knees
+    type: metric_threshold_at_phase
+    message: "The knees don't fully straighten at the top, so the lift finishes soft and the quads never lock the rep out."
+    tip: "Stand all the way up with knees and hips locked and glutes squeezed before the next rep."
+    joints: [knee]
+    params: { metric: knee, phase: top, aggregate: value_at, comparator: lt, threshold: 165, moderate_at: 158, severe_at: 148, unit: deg, plane: sagittal }
+
+  - id: jerky_pull
+    type: tempo
+    severity: minor
+    message: "The bar is yanked off the floor rather than pulled with a smooth build of tension, spiking load on the lower back."
+    tip: "Take the slack out of the bar, then push the floor away smoothly — no jerk off the ground."
+    joints: [hip]
+    params: { min_seconds: 0.9 }
+
+  - id: inconsistent_tempo
+    type: tempo_consistency
+    message: "Rep tempo varies a lot across the set, usually fatigue eroding position and control on later reps."
+    tip: "Reset every rep from the floor with the same brace and cadence; stop when speed drops sharply."
+    joints: [hip]
+    params: { max_cv: 30, moderate_at: 42, severe_at: 62 }
+
 score_base: 100

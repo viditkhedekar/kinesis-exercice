@@ -8,6 +8,7 @@ metrics:
   knee_valgus_ratio:
     { type: distance, points: [left_knee, right_knee], normalize_by: ankle_sep }
   hip_y: { type: coordinate, points: [hip], axis: y, sided: true }
+  back_line: { type: angle, points: [ear, shoulder, hip], sided: true }  # ~180 = neutral spine, small = rounded/collapsed
 
 rep:
   signal: knee
@@ -96,5 +97,19 @@ rules:
     tip: "Pick a cadence and hold it; stop the set when bar speed drops sharply."
     joints: [knee]
     params: { max_cv: 28, moderate_at: 40, severe_at: 60 }
+
+  - id: chest_collapse
+    type: metric_threshold_at_phase
+    message: "The upper back rounds and the chest collapses forward at the bottom (approximate, shown side), flexing the spine under load."
+    tip: "Keep the chest up and the upper back braced; think 'proud chest' from the top of the rep all the way to the bottom."
+    joints: [shoulder, hip]
+    params: { metric: back_line, phase: bottom, aggregate: value_at, comparator: lt, threshold: 150, moderate_at: 138, severe_at: 122, unit: deg, plane: sagittal }
+
+  - id: uneven_descent_timing
+    type: timing_asymmetry
+    message: "One knee reaches the bottom later than the other, a sign the descent is loading one leg before the other."
+    tip: "Descend with both legs together and keep the hips level on the way down."
+    joints: [knee]
+    params: { metric: knee, direction: valley, max_seconds: 0.20, moderate_at: 0.40, severe_at: 0.70, plane: frontal }
 
 score_base: 100

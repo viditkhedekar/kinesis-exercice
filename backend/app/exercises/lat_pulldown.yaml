@@ -49,6 +49,27 @@ rules:
     tip: "Start each rep by pulling the shoulder blades down, then drive the elbows to the floor."
     params: { landmark: shoulder, reference: hip, axis: y, aggregate: net_up, threshold: 8, moderate_at: 14, severe_at: 22, sided: true, plane: frontal }
 
+  - id: incomplete_pull
+    type: metric_threshold_at_phase
+    message: "The bar doesn't come down far enough, so the lats never reach the fully-contracted bottom of the pull."
+    tip: "Pull the bar to the upper chest and drive the elbows down toward the floor each rep."
+    joints: [elbow]
+    params: { metric: elbow, phase: bottom, aggregate: value_at, comparator: gt, threshold: 80, moderate_at: 95, severe_at: 115, unit: deg, plane: sagittal }
+
+  - id: arm_asymmetry
+    type: asymmetry
+    message: "One arm pulls the bar down further than the other, training the two lats unevenly."
+    tip: "Pull evenly to a level bar; if one side dominates, add single-arm pulldowns."
+    joints: [elbow]
+    params: { metric: elbow, aggregate: max, max_diff: 14, moderate_at: 24, severe_at: 38, unit: deg, plane: frontal }
+
+  - id: timing_asymmetry
+    type: timing_asymmetry
+    message: "One arm reaches the bottom of the pull later than the other — the pull is out of sync side to side."
+    tip: "Pull both arms down together to a shared count; slow the faster side to match."
+    joints: [elbow]
+    params: { metric: elbow, direction: valley, max_seconds: 0.20, moderate_at: 0.40, severe_at: 0.70, plane: frontal }
+
   - id: inconsistent_tempo
     type: tempo_consistency
     message: "Rep tempo drifts across the set, usually fatigue and form breaking down late."

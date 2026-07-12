@@ -10,6 +10,7 @@ import { signalFor } from "@/lib/live/exerciseSignals";
 import { POSE_EDGES } from "@/lib/live/landmarks";
 import { closePoseLandmarker, detectFrame, getPoseLandmarker } from "@/lib/live/mediapipe";
 import { RepEngine } from "@/lib/live/repEngine";
+import { computeRepMetrics, type RepMetrics } from "@/lib/live/repMetrics";
 import { renderLiveFrame } from "@/lib/poseOverlay";
 import type { PoseFrame } from "@/lib/types";
 
@@ -39,8 +40,8 @@ interface Props {
   onError?: (message: string) => void;
   /** Throttled: current rep depth 0..1 and whether a pose is tracked. */
   onTick?: (progress: number, tracking: boolean) => void;
-  /** Fired when a rep completes — the cue to score the current set. */
-  onRepComplete?: () => void;
+  /** Fired when a rep completes, with that rep's measurements for instant coaching. */
+  onRepComplete?: (metrics: RepMetrics) => void;
 }
 
 const LiveCamera = forwardRef<LiveCameraHandle, Props>(function LiveCamera(
@@ -169,8 +170,14 @@ const LiveCamera = forwardRef<LiveCameraHandle, Props>(function LiveCamera(
           if (capturingRef.current) {
             framesRef.current.push(frame);
             timesRef.current.push(ts / 1000);
-            if (repEngineRef.current?.update(frame)) {
-              callbacks.current.onRepComplete?.();
+            const bounds = repEngineRef.current?.update(frame, ts, framesRef.current.length - 1);
+            if (bounds) {
+              try {
+                const metrics = computeRepMetrics(exerciseKey, framesRef.current, bounds);
+                callbacks.current.onRepComplete?.(metrics);
+              } catch {
+                /* a metrics failure must never break the capture loop */
+              }
             }
           }
 

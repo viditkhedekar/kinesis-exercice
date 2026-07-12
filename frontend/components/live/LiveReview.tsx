@@ -8,7 +8,8 @@ import { scoreColor } from "@/lib/poseOverlay";
 import type { ProgressPoint, RepFault } from "@/lib/types";
 import { RomBars } from "../charts";
 import CoachPanel from "../CoachPanel";
-import GroupedFaultList from "../GroupedFaultList";
+import FaultDeck from "../FaultDeck";
+import InsightCards from "../InsightCards";
 import Panel from "../Panel";
 import { Skeleton } from "../ui";
 import LivePlayer from "./LivePlayer";
@@ -91,6 +92,8 @@ export default function LiveReview({ sessionId }: { sessionId: number }) {
         </div>
       </div>
 
+      {r.insights.length > 0 && <InsightCards insights={r.insights} />}
+
       <div className="grid lg:grid-cols-3 gap-4">
         {/* Left: skeleton playback */}
         <div className="lg:col-span-2 space-y-3">
@@ -141,7 +144,11 @@ export default function LiveReview({ sessionId }: { sessionId: number }) {
               )}
             </Panel>
           )}
-          <GroupedFaultList title="Coaching priorities" faults={r.priorities} fps={fps} onSeek={() => {}} />
+          <FaultDeck
+            title="Coaching priorities"
+            tabs={[{ key: "priorities", label: "Priorities", faults: r.priorities, emptyText: "No priority issues — nice work." }]}
+            fps={fps}
+          />
           <CoachPanel report={r} />
         </div>
       </div>
@@ -172,7 +179,14 @@ export default function LiveReview({ sessionId }: { sessionId: number }) {
         {romData.length > 0 ? <RomBars data={romData} /> : <p className="t-caption">No reps detected.</p>}
       </Panel>
 
-      <GroupedFaultList title="All detected issues" faults={r.fault_groups} fps={fps} onSeek={() => {}} emptyText="No technique faults detected — clean, consistent reps." />
+      <FaultDeck
+        title="Detected issues"
+        tabs={[
+          { key: "priorities", label: "Priorities", faults: r.priorities, emptyText: "No priority issues — nice work." },
+          { key: "all", label: "All issues", faults: r.fault_groups, emptyText: "No technique faults detected — clean, consistent reps." },
+        ]}
+        fps={fps}
+      />
     </div>
   );
 }

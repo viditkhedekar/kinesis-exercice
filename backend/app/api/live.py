@@ -71,17 +71,23 @@ def _to_array(frames: list[list[list[float]]]) -> np.ndarray:
     """Browser frames → ``(F, 33, 4)`` float array, tolerant of short/empty rows.
 
     Missing landmarks become NaN with visibility 0, matching the pose service so
-    the biomechanics/rules code (which already handles NaN) is unchanged."""
+    the biomechanics/rules code (which already handles NaN) is unchanged.
+
+    The browser buffers ``NaN`` for undetected-pose frames, and ``JSON.stringify``
+    serialises those as ``null`` — so per-element values may be ``None`` here.
+    Those are left as ``NaN`` rather than assigned (``float(None)`` would raise)."""
     F = len(frames)
     arr = np.full((F, NUM_LANDMARKS, 4), np.nan, dtype=np.float32)
     for i, frame in enumerate(frames):
+        if not frame:
+            continue
         for j, lm in enumerate(frame[:NUM_LANDMARKS]):
-            if lm is None or len(lm) < 4:
+            if not lm:
                 continue
-            arr[i, j, 0] = lm[0]
-            arr[i, j, 1] = lm[1]
-            arr[i, j, 2] = lm[2]
-            arr[i, j, 3] = lm[3]
+            for k in range(min(4, len(lm))):
+                v = lm[k]
+                if v is not None:
+                    arr[i, j, k] = v
     return arr
 
 

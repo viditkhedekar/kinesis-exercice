@@ -84,6 +84,21 @@ rules:
     joints: [wrist]
     params: { metric: wrist, aggregate: min, comparator: lt, threshold: 150, moderate_at: 135, severe_at: 115, unit: deg, plane: sagittal }
 
+  - id: arm_asymmetry
+    type: asymmetry
+    message: "One arm curls to a tighter squeeze than the other, so the biceps are loaded unevenly at the top."
+    tip: "Curl both arms to the same height and squeeze equally; film head-on to compare."
+    joints: [elbow]
+    params: { metric: elbow, aggregate: max, max_diff: 14, moderate_at: 24, severe_at: 38, unit: deg, plane: frontal }
+
+  - id: rushed_reps
+    type: tempo
+    severity: minor
+    message: "Reps are fast and swung, dropping the weight rather than lowering the biceps under control."
+    tip: "Lower over ~2s and curl smoothly; the eccentric builds as much size as the lift up."
+    joints: [elbow]
+    params: { min_seconds: 0.8 }
+
   - id: inconsistent_tempo
     type: tempo_consistency
     message: "Rep tempo drifts across the set — usually fatigue creeping in and form starting to break down."

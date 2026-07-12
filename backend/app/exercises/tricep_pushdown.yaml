@@ -20,7 +20,15 @@ rules:
     message: "Arms don't fully extend at the bottom, so the triceps never reach the locked-out position where they contract hardest."
     tip: "Push all the way down until the elbows are straight and squeeze the triceps before letting the bar rise."
     joints: [elbow]
-    params: { metric: elbow, phase: top, aggregate: value_at, comparator: lt, threshold: 160, moderate_at: 150, severe_at: 135, unit: deg, plane: sagittal }
+    # peak-direction: full lockdown is the rep's extreme (phase: bottom), not phase: top (the bar-up start).
+    params: { metric: elbow, phase: bottom, aggregate: value_at, comparator: lt, threshold: 160, moderate_at: 150, severe_at: 135, unit: deg, plane: sagittal }
+
+  - id: short_topstretch
+    type: metric_threshold_at_phase
+    message: "The bar isn't allowed to rise far enough between reps, cutting the top of the range where the triceps stretch under load."
+    tip: "Let the bar come up until the forearms pass parallel before pushing back down to lockout."
+    joints: [elbow]
+    params: { metric: elbow, phase: top, aggregate: value_at, comparator: gt, threshold: 110, moderate_at: 122, severe_at: 138, unit: deg, plane: sagittal }
 
   - id: short_rom
     type: insufficient_rom
@@ -49,6 +57,21 @@ rules:
     tip: "Push both sides to full lockout evenly; if using a rope, keep the hands level."
     joints: [elbow]
     params: { metric: elbow, max_diff: 16, moderate_at: 28, severe_at: 46, unit: deg, plane: frontal }
+
+  - id: arm_asymmetry
+    type: asymmetry
+    message: "One arm pushes to a deeper lockout than the other, loading the two triceps unevenly."
+    tip: "Drive both hands down to the same endpoint on a shared count; keep the rope or bar level."
+    joints: [elbow]
+    params: { metric: elbow, aggregate: max, max_diff: 12, moderate_at: 20, severe_at: 32, unit: deg, plane: frontal }
+
+  - id: jerky_reps
+    type: tempo
+    severity: minor
+    message: "Reps are fast and jerky, snapping the bar down with momentum instead of controlled triceps tension."
+    tip: "Push down over ~1s and resist the bar back up under control; don't let it fly up."
+    joints: [elbow]
+    params: { min_seconds: 0.6 }
 
   - id: inconsistent_tempo
     type: tempo_consistency

@@ -39,4 +39,13 @@ export const Icon = {
   Arrow: (p: P) => (
     <svg {...base} {...p}><path d="M5 12h14M13 6l6 6-6 6" /></svg>
   ),
+  Check: (p: P) => (
+    <svg {...base} {...p}><path d="M4 12l5 5L20 6" /></svg>
+  ),
+  Scale: (p: P) => (
+    <svg {...base} {...p}><path d="M12 4v16M6 8h12M6 8l-3 6a3 3 0 0 0 6 0L6 8Zm12 0l-3 6a3 3 0 0 0 6 0l-3-6Z" /></svg>
+  ),
+  Bulb: (p: P) => (
+    <svg {...base} {...p}><path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-4 10.5c.6.6 1 1.4 1 2.5h6c0-1.1.4-1.9 1-2.5A6 6 0 0 0 12 3Z" /></svg>
+  ),
 };

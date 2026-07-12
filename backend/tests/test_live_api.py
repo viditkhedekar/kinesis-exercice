@@ -105,3 +105,45 @@ def test_unknown_exercise_rejected(db):
     client, _ = _client(db)
     r = client.post("/sessions/live", json={"exercise_key": "nope"})
     assert r.status_code == 400
+
+
+def test_to_array_tolerates_null_landmarks():
+    """The browser serialises NaN (undetected pose) as JSON null; _to_array must
+    coerce those to NaN, not crash on float(None)."""
+    from app.api.live import _to_array
+
+    frames = [
+        [[0.1, 0.2, 0.0, 0.9]] * 33,          # a good frame
+        [[None, None, None, 0.0]] * 33,        # a fully-undetected frame (null coords)
+        [],                                     # an empty frame
+    ]
+    arr = _to_array(frames)
+    assert arr.shape == (3, 33, 4)
+    assert not np.isnan(arr[0, 0, 0])
+    assert np.isnan(arr[1, 0, 0]) and arr[1, 0, 3] == 0.0
+    assert np.all(np.isnan(arr[2]))
+
+
+def _nullify(frames: np.ndarray) -> list:
+    """(F,33,4) → nested lists with NaN → None, exactly like the browser payload."""
+    return [[[None if (v != v) else float(v) for v in lm] for lm in f] for f in frames.tolist()]
+
+
+def test_finish_survives_undetected_frames(db):
+    """A real capture starts with a few no-pose frames (null landmarks). Finish
+    must still complete the session and produce a report — not 500 into a stuck
+    'processing' state."""
+    client, _ = _client(db)
+    session_id = client.post("/sessions/live", json={"exercise_key": "squat"}).json()["id"]
+
+    reps = squat_landmarks(knee_series(3, bottom=85.0))
+    null_frame = [[None, None, None, 0.0] for _ in range(33)]
+    frames = [null_frame, null_frame] + _nullify(reps)  # lead-in with no pose
+    ts = list(np.arange(len(frames)) / 30.0)
+
+    r = client.post(f"/sessions/live/{session_id}/finish", json={"frames": frames, "timestamps": ts, "sets": []})
+    assert r.status_code == 200, r.text
+
+    report = client.get(f"/sessions/{session_id}/report").json()
+    assert report["session"]["status"] == "complete"
+    assert len(report["reps"]) >= 1

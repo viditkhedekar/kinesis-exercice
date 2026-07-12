@@ -4,6 +4,7 @@ name: Push-Up
 metrics:
   elbow: { type: angle, points: [shoulder, elbow, wrist], sided: true }   # small = bottom
   body_line: { type: angle, points: [shoulder, hip, ankle], sided: true } # ~180 = straight
+  arm_flare: { type: angle, points: [elbow, shoulder, hip], sided: true }  # large = elbows out (T), small = tucked (arrow)
 
 rep:
   signal: elbow
@@ -48,6 +49,27 @@ rules:
     tip: "Match left and right depth; add a short pause at the bottom to even them out."
     joints: [elbow]
     params: { metric: elbow, max_diff: 18, moderate_at: 30, severe_at: 50, unit: deg, plane: frontal }
+
+  - id: elbow_flare
+    type: metric_threshold_at_phase
+    message: "The elbows flare out toward shoulder height at the bottom instead of staying tucked, stressing the shoulder joint and taking load off the triceps."
+    tip: "Tuck the elbows to about 45deg from the torso so the arms make an arrow shape, not a T."
+    joints: [shoulder, elbow]
+    params: { metric: arm_flare, phase: bottom, aggregate: value_at, comparator: gt, threshold: 75, moderate_at: 88, severe_at: 105, unit: deg, plane: frontal }
+
+  - id: partial_rom
+    type: insufficient_rom
+    message: "Overall range is short — the elbows bend through only part of the available range, trimming the training effect."
+    tip: "Lower until the elbows reach about 90deg, then press to full lockout every rep."
+    joints: [elbow]
+    params: { metric: elbow, min_rom: 55, moderate_at: 42, severe_at: 30, unit: deg, plane: sagittal }
+
+  - id: timing_asymmetry
+    type: timing_asymmetry
+    message: "One arm reaches the bottom later than the other, so the chest twists and one side takes more of the load."
+    tip: "Lower both arms together and keep the chest square to the floor."
+    joints: [elbow]
+    params: { metric: elbow, direction: valley, max_seconds: 0.20, moderate_at: 0.40, severe_at: 0.70, plane: frontal }
 
   - id: rushed_tempo
     type: tempo

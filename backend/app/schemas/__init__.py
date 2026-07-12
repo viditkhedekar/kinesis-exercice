@@ -121,6 +121,14 @@ class GroupedFaultOut(BaseModel):
     start_frame: int
 
 
+class InsightOut(BaseModel):
+    """A single concise, data-grounded observation surfaced as a card."""
+    kind: str                    # timing | progress | prevalence | clean | symmetry | consistency
+    tone: str                    # positive | attention | neutral
+    text: str
+    emphasis: str | None = None  # short highlighted figure, e.g. "+9%", "0.18s"
+
+
 class KeyMetricsOut(BaseModel):
     rom: float = 0.0
     rom_unit: str = "deg"
@@ -145,6 +153,7 @@ class ReportOut(BaseModel):
     grade: str = ""
     key_metrics: KeyMetricsOut | None = None
     strengths: list[str] = []
+    insights: list[InsightOut] = []         # 1–2 concise per-session observations
     priorities: list[GroupedFaultOut] = []  # top 3 grouped faults
     fault_groups: list[GroupedFaultOut] = []
     coaching: str | None = None
@@ -165,9 +174,10 @@ class LiveCreateIn(BaseModel):
 class LiveScoreIn(BaseModel):
     """The current set's landmark buffer, scored on demand (usually once per
     completed rep). ``frames`` is one entry per captured frame: 33 landmarks of
-    ``[x, y, z, visibility]`` in normalized image coordinates."""
+    ``[x, y, z, visibility]`` in normalized image coordinates. Values may be
+    ``null`` — the browser serialises NaN (undetected pose) as JSON null."""
     fps: float
-    frames: list[list[list[float]]]
+    frames: list[list[list[float | None]]]
 
 
 class LiveCue(BaseModel):
@@ -194,8 +204,9 @@ class LiveFinishIn(BaseModel):
 
     ``timestamps`` are per-frame capture times in seconds (variable browser fps);
     the server resamples to a uniform grid so the frame-unit rep tuning applies.
-    ``sets`` are frame-index ranges into ``frames`` (one per set)."""
-    frames: list[list[list[float]]]
+    ``sets`` are frame-index ranges into ``frames`` (one per set). Landmark values
+    may be ``null`` (the browser serialises NaN from undetected poses as null)."""
+    frames: list[list[list[float | None]]]
     timestamps: list[float] = []
     sets: list[SetBound] = []
     width: int = 0        # camera frame dimensions (for correct overlay aspect)

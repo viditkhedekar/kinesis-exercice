@@ -1,14 +1,13 @@
 "use client";
 
-import { scoreColor } from "@/lib/poseOverlay";
 import type { LiveCue } from "@/lib/types";
 
 export interface LiveStats {
   reps: number;
+  repsThisSet: number;
   sets: number;
   elapsed: number; // seconds
   setElapsed: number; // seconds
-  avgScore: number | null;
   progress: number; // 0..1 current rep depth
   tracking: boolean;
 }
@@ -52,11 +51,7 @@ export default function LiveHUD({
       {/* Top-left metric tiles */}
       <div className="absolute top-3 left-3 grid grid-cols-2 gap-2 w-[min(60vw,320px)]">
         <Tile label="Reps" value={String(stats.reps)} />
-        <Tile
-          label="Avg technique"
-          value={stats.avgScore === null ? "—" : String(Math.round(stats.avgScore))}
-          color={stats.avgScore === null ? undefined : scoreColor(stats.avgScore)}
-        />
+        <Tile label="This set" value={String(stats.repsThisSet)} />
         <Tile label="Set time" value={fmtTime(stats.setElapsed)} />
         <Tile label="Elapsed · Set" value={`${fmtTime(stats.elapsed)} · ${stats.sets}`} />
       </div>

@@ -17,16 +17,29 @@ settings = get_settings()
 DEFAULT_PREFS = {"onboarded": False, "goals": [], "exercises": []}
 
 
+def _cookie_samesite_secure() -> tuple[str, bool]:
+    """Resolve the SameSite/Secure pair for the session cookie.
+
+    Browsers reject a ``SameSite=None`` cookie unless it is also ``Secure``, so
+    force Secure on whenever SameSite is None — otherwise the cross-site cookie
+    would be silently dropped by the browser and never stored.
+    """
+    samesite = settings.auth_cookie_samesite.lower()
+    secure = settings.auth_cookie_secure or samesite == "none"
+    return samesite, secure
+
+
 def _set_session_cookie(response: Response, user_id: int, remember: bool) -> None:
     days = settings.remember_days if remember else settings.session_days
     token = create_token(user_id, ttl_seconds=days * 86400)
+    samesite, secure = _cookie_samesite_secure()
     response.set_cookie(
         key=settings.auth_cookie,
         value=token,
         max_age=days * 86400,
         httponly=True,
-        samesite="lax",
-        secure=settings.auth_cookie_secure,
+        samesite=samesite,
+        secure=secure,
         path="/",
     )
 
@@ -65,7 +78,11 @@ def login(body: LoginIn, response: Response, db: DbSession = Depends(get_db)) ->
 
 @router.post("/logout", status_code=204)
 def logout(response: Response) -> None:
-    response.delete_cookie(settings.auth_cookie, path="/")
+    # The clearing cookie must carry the same SameSite/Secure/path attributes as
+    # the one it replaces, or the browser treats it as a different cookie and the
+    # session cookie is never actually removed.
+    samesite, secure = _cookie_samesite_secure()
+    response.delete_cookie(settings.auth_cookie, path="/", samesite=samesite, secure=secure)
 
 
 @router.get("/me", response_model=UserOut)

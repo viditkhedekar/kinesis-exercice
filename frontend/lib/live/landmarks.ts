@@ -69,23 +69,34 @@ export function angleDeg(
 }
 
 /**
- * The primary rep-signal angle for a three-point "angle" metric (e.g. squat
- * knee = hip-knee-ankle), averaged across whichever side is better tracked.
- * Used only for the live depth gauge + rep-completion trigger — never scoring.
+ * The rep-signal angle for a three-point "angle" metric (e.g. squat knee =
+ * hip-knee-ankle) resolved per side. Either side is `null` when its joints are
+ * occluded. Used for the live depth gauge, rep counting, and symmetry cues —
+ * never scoring (that stays server-authoritative at finish).
  */
-export function signalAngle(landmarks: number[][], points: string[]): number | null {
-  if (points.length !== 3) return null;
-  const vals: number[] = [];
+export function signalAngleSides(
+  landmarks: number[][],
+  points: string[],
+): { left: number | null; right: number | null } {
+  const out: { left: number | null; right: number | null } = { left: null, right: null };
+  if (points.length !== 3) return out;
   for (const side of ["left", "right"] as const) {
     const idx = points.map((p) => resolve(p, side));
     if (idx.some((i) => i === null)) continue;
     const [a, b, c] = idx as number[];
-    // require the vertex + endpoints to be reasonably visible
+    // require the vertex + endpoints to be reasonably visible.
+    // Landmark layout is [x, y, z, visibility] — index 3 is visibility (index 2
+    // is z-depth, which is small/signed and must NOT be used as a visibility gate).
     const pts = [landmarks[a], landmarks[b], landmarks[c]];
-    if (pts.some((p) => !p || p[2] < 0.4)) continue;
-    const ang = angleDeg(pts[0], pts[1], pts[2]);
-    if (ang !== null) vals.push(ang);
+    if (pts.some((p) => !p || p[3] < 0.4)) continue;
+    out[side] = angleDeg(pts[0], pts[1], pts[2]);
   }
-  if (!vals.length) return null;
-  return vals.reduce((s, v) => s + v, 0) / vals.length;
+  return out;
+}
+
+/** Both-sides mean of the rep-signal angle (`null` if neither side is visible). */
+export function signalAngle(landmarks: number[][], points: string[]): number | null {
+  const { left, right } = signalAngleSides(landmarks, points);
+  const vals = [left, right].filter((v): v is number => v !== null);
+  return vals.length ? vals.reduce((s, v) => s + v, 0) / vals.length : null;
 }

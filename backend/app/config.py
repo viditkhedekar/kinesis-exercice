@@ -50,6 +50,13 @@ class Settings(BaseSettings):
     auth_secret: str = "dev-insecure-change-me"   # HMAC signing key for session tokens
     auth_cookie: str = "kinesis_session"
     auth_cookie_secure: bool = False              # set True behind HTTPS in production
+    # SameSite policy for the session cookie. When the frontend and backend are
+    # served from different sites (e.g. *.vercel.app calling *.onrender.com), the
+    # browser only attaches the cookie to cross-site fetch/XHR requests when this
+    # is "none" — and "none" additionally REQUIRES Secure=true. Use "lax" only when
+    # the two share a site (local dev on localhost). Set KINESIS_AUTH_COOKIE_SAMESITE=none
+    # and KINESIS_AUTH_COOKIE_SECURE=true in the cross-site production deployment.
+    auth_cookie_samesite: str = "lax"             # "lax" | "none" | "strict"
     session_days: int = 7                         # default session lifetime
     remember_days: int = 30                       # "remember me" lifetime
 

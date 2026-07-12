@@ -34,6 +34,7 @@ from app.services.feedback import (
     overall_score,
     strengths,
 )
+from app.services.insights import generate_insights
 from app.services.pose import PoseResult, run_pose, save_landmarks
 from app.services.progress import upsert_progress
 from app.services.reps import RepWindow, detect_reps
@@ -74,6 +75,28 @@ def _detect_reps_per_set(
             )
             out.append((global_rw, set_idx))
     return out
+
+
+def _previous_session(db, session: Session) -> Session | None:
+    """The athlete's most recent *completed* session of the same exercise, for
+    change-over-time insights. Falls back to any user when the session has none
+    (e.g. single-user/live fixtures). The in-progress current session is excluded
+    naturally by the ``complete`` filter."""
+    from sqlalchemy import select
+
+    stmt = (
+        select(Session)
+        .where(
+            Session.exercise_key == session.exercise_key,
+            Session.id != session.id,
+            Session.status == SessionStatus.complete,
+        )
+        .order_by(Session.created_at.desc(), Session.id.desc())
+        .limit(1)
+    )
+    if session.user_id is not None:
+        stmt = stmt.where(Session.user_id == session.user_id)
+    return db.scalar(stmt)
 
 
 def run_pipeline(session_id: int) -> None:
@@ -217,10 +240,25 @@ def run_pipeline_from_landmarks(
     km = key_metrics(rep_windows, metrics, config, fps, view)
     overall = overall_score(groups, len(rep_windows))
     session.overall_score = overall
+
+    # Concise, data-grounded observations (incl. change vs the previous session).
+    prev = _previous_session(db, session)
+    prev_summary = (prev.summary or {}) if prev else {}
+    try:
+        insights = generate_insights(
+            reps=rep_windows, metrics=metrics, config=config, fps=fps,
+            groups=groups, km=km, overall=overall,
+            prev_km=prev_summary.get("key_metrics"),
+            prev_overall=prev.overall_score if prev else None,
+        )
+    except Exception:  # noqa: BLE001 — insights must never fail the pipeline
+        insights = []
+
     summary: dict = {
         "grade": grade(overall),
         "key_metrics": km,
         "strengths": strengths(groups, km, config),
+        "insights": insights,
     }
     if extra_summary:
         summary.update(extra_summary)

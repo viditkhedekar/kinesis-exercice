@@ -105,6 +105,13 @@ export interface GroupedFault {
   start_frame: number;
 }
 
+export interface Insight {
+  kind: string; // timing | progress | prevalence | clean | symmetry | consistency
+  tone: "positive" | "attention" | "neutral";
+  text: string;
+  emphasis: string | null;
+}
+
 export interface KeyMetrics {
   rom: number;
   rom_unit: string;
@@ -135,6 +142,7 @@ export interface Report {
   grade: string;
   key_metrics: KeyMetrics | null;
   strengths: string[];
+  insights: Insight[];
   priorities: GroupedFault[];
   fault_groups: GroupedFault[];
   coaching: string | null;

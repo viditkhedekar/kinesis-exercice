@@ -20,7 +20,23 @@ rules:
     message: "Arms don't reach full overhead lockout, so the delts and triceps miss the top of the press where the movement is finished."
     tip: "Press until the elbows are straight and the biceps are by the ears before lowering."
     joints: [elbow]
-    params: { metric: elbow, phase: top, aggregate: value_at, comparator: lt, threshold: 155, moderate_at: 145, severe_at: 130, unit: deg, plane: sagittal }
+    # peak-direction: the overhead lockout is the rep's extreme (phase: bottom), not phase: top (the racked start).
+    params: { metric: elbow, phase: bottom, aggregate: value_at, comparator: lt, threshold: 155, moderate_at: 145, severe_at: 130, unit: deg, plane: sagittal }
+
+  - id: shallow_bottom
+    type: metric_threshold_at_phase
+    message: "The bar or dumbbells don't come down far enough between reps, skipping the bottom of the press where the delts work hardest."
+    tip: "Lower to at least chin height each rep before driving back overhead."
+    joints: [elbow]
+    params: { metric: elbow, phase: top, aggregate: value_at, comparator: gt, threshold: 100, moderate_at: 115, severe_at: 135, unit: deg, plane: sagittal }
+
+  - id: rushed_reps
+    type: tempo
+    severity: minor
+    message: "Reps are fast and bouncy, using leg drive or momentum rather than controlled shoulder strength."
+    tip: "Lower over ~1.5s and press smoothly; keep the hips and knees still on a strict press."
+    joints: [elbow]
+    params: { min_seconds: 0.6 }
 
   - id: short_rom
     type: insufficient_rom

@@ -8,8 +8,9 @@ import { scoreColor } from "@/lib/poseOverlay";
 import type { RepFault } from "@/lib/types";
 import { AngleChart, RomBars } from "./charts";
 import CoachPanel from "./CoachPanel";
+import FaultDeck from "./FaultDeck";
 import FaultTimeline from "./FaultTimeline";
-import GroupedFaultList from "./GroupedFaultList";
+import InsightCards from "./InsightCards";
 import Panel from "./Panel";
 import PlayerOverlay from "./PlayerOverlay";
 import { Skeleton } from "./ui";
@@ -71,6 +72,8 @@ export default function ReportView({ sessionId }: { sessionId: number }) {
         </div>
       </div>
 
+      {r.insights.length > 0 && <InsightCards insights={r.insights} />}
+
       {/* Video + analysis panel */}
       <div className="grid lg:grid-cols-3 gap-4">
         <div className="lg:col-span-2 space-y-3">
@@ -118,7 +121,12 @@ export default function ReportView({ sessionId }: { sessionId: number }) {
               )}
             </Panel>
           )}
-          <GroupedFaultList title="Priorities" faults={r.priorities} fps={fps} onSeek={seek} />
+          <FaultDeck
+            title="Priorities"
+            tabs={[{ key: "priorities", label: "Priorities", faults: r.priorities, emptyText: "No priority issues — nice work." }]}
+            fps={fps}
+            onSeek={seek}
+          />
           <CoachPanel report={r} />
         </div>
       </div>
@@ -198,7 +206,15 @@ export default function ReportView({ sessionId }: { sessionId: number }) {
         </table>
       </Panel>
 
-      <GroupedFaultList title="All detected issues" faults={r.fault_groups} fps={fps} onSeek={seek} emptyText="No technique faults detected — clean, consistent reps." />
+      <FaultDeck
+        title="Detected issues"
+        tabs={[
+          { key: "priorities", label: "Priorities", faults: r.priorities, emptyText: "No priority issues — nice work." },
+          { key: "all", label: "All issues", faults: r.fault_groups, emptyText: "No technique faults detected — clean, consistent reps." },
+        ]}
+        fps={fps}
+        onSeek={seek}
+      />
     </div>
   );
 }

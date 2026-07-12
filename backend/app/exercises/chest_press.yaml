@@ -20,7 +20,22 @@ rules:
     message: "Arms don't fully extend at the end of the press, so each rep starts before the last one finished and the working range creeps shorter."
     tip: "Press all the way out until the elbows are straight (not hyperextended) before letting the handles back."
     joints: [elbow]
-    params: { metric: elbow, phase: top, aggregate: value_at, comparator: lt, threshold: 155, moderate_at: 145, severe_at: 130, unit: deg, plane: sagittal }
+    # peak-direction: the pressed lockout is the rep's extreme (phase: bottom), not phase: top (the retracted start).
+    params: { metric: elbow, phase: bottom, aggregate: value_at, comparator: lt, threshold: 155, moderate_at: 145, severe_at: 130, unit: deg, plane: sagittal }
+
+  - id: shallow_stretch
+    type: metric_threshold_at_phase
+    message: "The handles aren't brought back far enough between presses, skipping the loaded stretch across the chest at the start of each rep."
+    tip: "Let the handles travel back until you feel a stretch across the chest before pressing again."
+    joints: [elbow]
+    params: { metric: elbow, phase: top, aggregate: value_at, comparator: gt, threshold: 105, moderate_at: 120, severe_at: 140, unit: deg, plane: sagittal }
+
+  - id: timing_asymmetry
+    type: timing_asymmetry
+    message: "One arm reaches full extension later than the other, so the press is really two out-of-sync arms."
+    tip: "Press both handles out together to a shared count; slow down so the lagging arm keeps pace."
+    joints: [elbow]
+    params: { metric: elbow, direction: peak, max_seconds: 0.20, moderate_at: 0.40, severe_at: 0.70, plane: frontal }
 
   - id: short_rom
     type: insufficient_rom

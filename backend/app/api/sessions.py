@@ -22,6 +22,7 @@ from app.models import (
 from app.schemas import (
     GhostOut,
     GroupedFaultOut,
+    InsightOut,
     JobStatusOut,
     KeyMetricsOut,
     LandmarksOut,
@@ -141,6 +142,7 @@ def get_report(
         grade=summary.get("grade", ""),
         key_metrics=key_metrics,
         strengths=summary.get("strengths", []),
+        insights=[InsightOut(**i) for i in summary.get("insights", [])],
         priorities=groups[:3],
         fault_groups=groups,
         coaching=note.text if note else None,

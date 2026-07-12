@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM python:3.11-slim-bookworm
 
 # Native runtime libraries for the CV stack.
 #   libgl1, libglib2.0-0  -> OpenCV (opencv-python-headless still needs these)
@@ -8,7 +8,7 @@ FROM python:3.11-slim
 #                                          even when inference runs on the CPU)
 # These are the GLVND dispatch libraries: they satisfy the sonames on headless,
 # GPU-less hosts without requiring a real GPU or display server.
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get install -y --no-install-recommends --allow-unauthenticated \
     libgl1 libglib2.0-0 libgles2 libegl1 curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
