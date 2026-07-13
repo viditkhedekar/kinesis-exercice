@@ -2,13 +2,16 @@
 
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
 import { api } from "@/lib/api";
-import type { User, UserPrefs } from "@/lib/types";
+import type { RegisterResult, ResendResult, User, UserPrefs } from "@/lib/types";
 
 interface AuthState {
   user: User | null;
   loading: boolean;
   login: (email: string, password: string, remember: boolean) => Promise<User>;
-  register: (email: string, name: string, password: string) => Promise<User>;
+  // Registration does NOT log in — the account must be verified by email first.
+  register: (email: string, name: string, password: string) => Promise<RegisterResult>;
+  verifyEmail: (token: string) => Promise<User>;
+  resendVerification: (email: string) => Promise<ResendResult>;
   logout: () => Promise<void>;
   updatePrefs: (patch: { name?: string; prefs?: UserPrefs }) => Promise<User>;
   refresh: () => Promise<void>;
@@ -41,10 +44,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const register = useCallback(async (email: string, name: string, password: string) => {
-    const u = await api.register(email, name, password);
-    setUser(u);
+    // Returns a "check your inbox" result; the user isn't authenticated yet.
+    return api.register(email, name, password);
+  }, []);
+
+  const verifyEmail = useCallback(async (token: string) => {
+    const u = await api.verifyEmail(token);
+    setUser(u); // verifying logs the user in (cookie set by the backend)
     return u;
   }, []);
+
+  const resendVerification = useCallback((email: string) => api.resendVerification(email), []);
 
   const logout = useCallback(async () => {
     await api.logout();
@@ -58,7 +68,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   return (
-    <AuthCtx.Provider value={{ user, loading, login, register, logout, updatePrefs, refresh }}>
+    <AuthCtx.Provider value={{ user, loading, login, register, verifyEmail, resendVerification, logout, updatePrefs, refresh }}>
       {children}
     </AuthCtx.Provider>
   );

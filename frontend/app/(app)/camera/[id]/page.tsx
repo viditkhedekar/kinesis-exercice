@@ -179,6 +179,18 @@ export default function LiveSessionPage() {
           onRepComplete={handleRepComplete}
         />
 
+        {/* Accuracy disclaimer — Live Camera Mode is still being refined. */}
+        <div className="pointer-events-none absolute inset-x-0 top-0 z-20 flex justify-center p-3">
+          <div className="pointer-events-auto flex items-center gap-2 rounded-full border border-orange-500/40 bg-black/70 px-3 py-1.5 backdrop-blur">
+            <span className="rounded-[5px] border border-orange-500/40 bg-orange-500/20 px-1.5 py-px text-[10px] font-semibold uppercase tracking-wide text-orange-400">
+              Refining
+            </span>
+            <span className="text-[12px] text-white/85">
+              Real-time results are experimental and not guaranteed accurate.
+            </span>
+          </div>
+        </div>
+
         {phase === "loading" && !error && (
           <div className="absolute inset-0 grid place-items-center text-center">
             <div className="space-y-2">

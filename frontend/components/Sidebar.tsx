@@ -6,9 +6,12 @@ import { useAuth } from "./AuthProvider";
 import LogoMark, { Wordmark } from "./Logo";
 import ThemeToggle from "./ThemeToggle";
 
-const NAV = [
+type NavItem = { href: string; label: string; icon: React.ComponentType; badge?: string };
+
+const NAV: NavItem[] = [
   { href: "/dashboard", label: "Dashboard", icon: GridIcon },
-  { href: "/camera", label: "Live Camera", icon: CameraIcon },
+  { href: "/camera", label: "Live Camera", icon: CameraIcon, badge: "Refining" },
+  { href: "/guides", label: "Exercise Guides", icon: BookIcon },
   { href: "/history", label: "History & Progress", icon: ChartIcon },
   { href: "/settings", label: "Settings", icon: GearIcon },
 ];
@@ -56,7 +59,7 @@ export default function Sidebar({
       </Link>
 
       <nav className="flex flex-col gap-0.5">
-        {NAV.map(({ href, label, icon: Icon }) => (
+        {NAV.map(({ href, label, icon: Icon, badge }) => (
           <Link
             key={href}
             href={href}
@@ -69,6 +72,11 @@ export default function Sidebar({
           >
             <Icon />
             {label}
+            {badge && (
+              <span className="ml-auto self-end rounded-[5px] border border-orange-500/40 bg-orange-500/15 px-1.5 py-px text-[10px] font-medium leading-none text-orange-500">
+                {badge}
+              </span>
+            )}
           </Link>
         ))}
       </nav>
@@ -115,6 +123,14 @@ function CameraIcon() {
       <rect x="1.5" y="4" width="13" height="9" rx="1.5" />
       <path d="M5 4l1-1.5h4L11 4" />
       <circle cx="8" cy="8.5" r="2.3" />
+    </svg>
+  );
+}
+function BookIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M8 3.5C6.8 2.6 5.3 2.3 3 2.5v9c2.3-.2 3.8.1 5 1 1.2-.9 2.7-1.2 5-1v-9c-2.3-.2-3.8.1-5 1Z" />
+      <path d="M8 3.5v9" />
     </svg>
   );
 }

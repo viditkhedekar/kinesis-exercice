@@ -59,6 +59,30 @@ class Settings(BaseSettings):
     session_days: int = 7                         # default session lifetime
     remember_days: int = 30                       # "remember me" lifetime
 
+    # --- Email verification ---
+    # New accounts must confirm their email before they can log in. Disable only
+    # for local flows/tests where email delivery isn't wanted.
+    require_email_verification: bool = True
+    email_verification_ttl_hours: int = 24        # link lifetime
+    email_resend_cooldown_seconds: int = 60       # min gap between verification emails
+    # Public base URL of the frontend, used to build the link in the email
+    # (e.g. https://kinesis-exercice.vercel.app -> {frontend_url}/verify?token=...).
+    frontend_url: str = "http://localhost:3000"
+
+    # --- Email delivery ---
+    # Provider: "resend" (default) | "sendgrid" | "smtp" | "console". When the
+    # selected provider has no credentials configured, delivery falls back to
+    # "console" (the link is logged) so the flow still works in local dev.
+    email_provider: str = "resend"
+    email_from: str = "physIQal <onboarding@resend.dev>"
+    resend_api_key: str | None = None
+    sendgrid_api_key: str | None = None
+    smtp_host: str | None = None
+    smtp_port: int = 587
+    smtp_user: str | None = None
+    smtp_password: str | None = None
+    smtp_starttls: bool = True
+
     # --- API ---
     cors_origins: list[str] = ["http://localhost:3000"]
 

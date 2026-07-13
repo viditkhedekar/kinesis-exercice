@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     DateTime,
     Enum,
     Float,
@@ -66,9 +67,35 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(256), unique=True, index=True)
     name: Mapped[str] = mapped_column(String(128), default="")
     password_hash: Mapped[str] = mapped_column(String(256))
+    # Email verification. New accounts start unverified and can't log in until they
+    # confirm via the emailed link. (Existing rows are backfilled TRUE on migrate so
+    # accounts that predate verification aren't locked out — see init_db.)
+    email_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # Onboarding + preferences: {onboarded: bool, goals: [...], exercises: [...]}
     prefs: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+    verification_tokens: Mapped[list[EmailVerificationToken]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )
+
+
+class EmailVerificationToken(Base):
+    """A single-use, expiring email-verification token.
+
+    Only the SHA-256 *hash* of the token is stored; the raw token lives solely in
+    the emailed link. On use we set ``used_at`` so a link works exactly once."""
+    __tablename__ = "email_verification_tokens"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+    user: Mapped[User] = relationship(back_populates="verification_tokens")
 
 
 class Exercise(Base):

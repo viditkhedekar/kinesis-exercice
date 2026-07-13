@@ -42,6 +42,7 @@ from app.services.pose import load_landmarks
 from app.services.pose.landmarks import POSE_EDGES
 from app.services.progress import build_ghost
 from app.services.storage import get_storage
+from app.services.timing import StageTimer
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 
@@ -87,27 +88,33 @@ def create_session(
     db: DbSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> SessionOut:
+    # Time the whole request so the deployed logs show exactly where the seconds go.
+    timer = StageTimer(f"analysis user={user.id}")
+
     if exercise_key not in _valid_exercise_keys():
         raise HTTPException(400, f"Unknown exercise: {exercise_key}")
 
     # Enforce the per-user history quota before storing anything new.
-    if _used_slots(db, user) + VIDEO_SLOT > HISTORY_LIMIT:
-        raise HTTPException(
-            409,
-            f"Your history is full ({int(HISTORY_LIMIT)} videos). Free a slot from your history: "
-            "fully delete a session, or delete a few videos while keeping their analysis "
-            "(each kept analysis, incl. Ghost Replay, still uses a quarter slot).",
-        )
+    with timer.stage("quota_check"):
+        if _used_slots(db, user) + VIDEO_SLOT > HISTORY_LIMIT:
+            raise HTTPException(
+                409,
+                f"Your history is full ({int(HISTORY_LIMIT)} videos). Free a slot from your history: "
+                "fully delete a session, or delete a few videos while keeping their analysis "
+                "(each kept analysis, incl. Ghost Replay, still uses a quarter slot).",
+            )
 
     session = Session(exercise_key=exercise_key, status=SessionStatus.uploaded, user_id=user.id)
     db.add(session)
     db.flush()  # assign id
 
     storage = get_storage()
-    path = storage.save_upload(session.id, file.filename or "video.mp4", file.file)
+    with timer.stage("upload_complete"):
+        path = storage.save_upload(session.id, file.filename or "video.mp4", file.file)
     db.add(Video(session_id=session.id, path=path, filename=file.filename or "video.mp4"))
     db.add(AnalysisJob(session_id=session.id, stage=JobStage.queued, progress=0.0))
-    db.commit()
+    with timer.stage("db_write_upload"):
+        db.commit()
 
     # Run the analysis pipeline synchronously, in-process — no task queue. The
     # request blocks until the full report is persisted, then returns the
@@ -115,14 +122,19 @@ def create_session(
     from app.services.pipeline import run_pipeline
 
     try:
-        run_pipeline(session.id)
+        run_pipeline(session.id, timer=timer)
     except Exception as exc:  # noqa: BLE001
         # run_pipeline has already marked the session/job failed in its own
         # transaction; surface the failure to the client.
+        timer.note("failed", True)
+        timer.log()
         raise HTTPException(500, f"Analysis failed: {exc}")
 
-    db.refresh(session)
-    return SessionOut.model_validate(session)
+    with timer.stage("response_serialize"):
+        db.refresh(session)
+        out = SessionOut.model_validate(session)
+    timer.log()  # emit the full per-stage timing breakdown for this analysis
+    return out
 
 
 @router.get("", response_model=list[SessionOut])

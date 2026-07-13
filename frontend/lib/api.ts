@@ -10,7 +10,9 @@ import type {
   PoseFrame,
   ProgressPoint,
   Quota,
+  RegisterResult,
   Report,
+  ResendResult,
   SessionSummary,
   Stats,
   User,
@@ -54,10 +56,17 @@ export function videoUrl(sessionId: number): string {
 }
 
 export const api = {
+  // --- health / warmup ---
+  health: () => req<{ status: string; pose_warm: boolean }>("/health"),
+
   // --- auth ---
   me: () => req<User>("/auth/me"),
   register: (email: string, name: string, password: string) =>
-    req<User>("/auth/register", { method: "POST", body: JSON.stringify({ email, name, password }) }),
+    req<RegisterResult>("/auth/register", { method: "POST", body: JSON.stringify({ email, name, password }) }),
+  verifyEmail: (token: string) =>
+    req<User>("/auth/verify-email", { method: "POST", body: JSON.stringify({ token }) }),
+  resendVerification: (email: string) =>
+    req<ResendResult>("/auth/resend-verification", { method: "POST", body: JSON.stringify({ email }) }),
   login: (email: string, password: string, remember: boolean) =>
     req<User>("/auth/login", { method: "POST", body: JSON.stringify({ email, password, remember }) }),
   logout: () => req<void>("/auth/logout", { method: "POST" }),

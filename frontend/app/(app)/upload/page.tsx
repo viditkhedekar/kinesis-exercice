@@ -9,6 +9,7 @@ import GuidePopup from "@/components/GuidePopup";
 import { useToast } from "@/components/Toaster";
 import { PageHeader } from "@/components/ui";
 import { api, ApiError } from "@/lib/api";
+import { allGuides } from "@/lib/guides";
 import { takePendingFile } from "@/lib/pendingUpload";
 import { markUploadDone, useUploadGuide } from "@/lib/uploadGuide";
 
@@ -55,6 +56,8 @@ export default function UploadPage() {
       // until the full report is ready, then we go straight to it (no polling).
       const session = await api.upload(selected, file);
       markUploadDone();
+      // Pop-up confirmation — persists across the navigation to the report.
+      toast(`${selectedName} analysis complete — opening your report.`, "success");
       router.replace(`/sessions/${session.id}`);
     } catch (e) {
       toast(e instanceof ApiError ? e.message : "Analysis failed", "error");
@@ -64,7 +67,7 @@ export default function UploadPage() {
 
   // While the analysis request is in flight, show a waiting screen with an
   // estimate instead of a queued-job poller.
-  if (busy) return <Analyzing exerciseName={selectedName} />;
+  if (busy) return <Analyzing exerciseName={selectedName} exerciseKey={selected} />;
 
   return (
     <div className="max-w-2xl">
@@ -158,48 +161,168 @@ export default function UploadPage() {
   );
 }
 
-// Shown while the synchronous analysis request is in flight. There's no queue to
-// poll — we just wait for the response, so this gives the user a time estimate
-// and something to look forward to.
-function Analyzing({ exerciseName }: { exerciseName: string }) {
+const PREPARING = "Preparing the analysis engine…";
+const PREPARING_NOTE = "This only happens the first time after the server starts.";
+const CORE_STAGES = [
+  "Uploading video",
+  "Detecting body landmarks",
+  "Tracking movement",
+  "Evaluating technique",
+  "Generating coaching feedback",
+] as const;
+
+// Shown while the synchronous analysis request is in flight. Since the request
+// blocks until the whole report is ready, we can't stream true per-stage progress
+// from it — but we DO detect a real cold start (engine not yet warm) and walk the
+// user through the actual pipeline stages on a calibrated timeline, holding on the
+// last stage until the response arrives and the page navigates away.
+function Analyzing({ exerciseName, exerciseKey }: { exerciseName: string; exerciseKey?: string }) {
   const [elapsed, setElapsed] = useState(0);
+  // Cold start = the pose engine hasn't warmed up since the server booted. Ask the
+  // backend once; on unknown/failure assume warm so we never falsely claim cold.
+  const [cold, setCold] = useState(false);
+
   useEffect(() => {
     const t = setInterval(() => setElapsed((s) => s + 1), 1000);
     return () => clearInterval(t);
   }, []);
+  useEffect(() => {
+    let alive = true;
+    api
+      .health()
+      .then((h) => {
+        if (alive) setCold(!h.pose_warm);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  // Stage timeline. A cold start leads with the engine-warming status and stretches
+  // the pose stages (model load); the final stage's duration is effectively infinite
+  // so it holds until the request resolves.
+  const stages: { label: string; note?: string; secs: number }[] = cold
+    ? [
+        { label: PREPARING, note: PREPARING_NOTE, secs: 8 },
+        { label: CORE_STAGES[0], secs: 3 },
+        { label: CORE_STAGES[1], secs: 9 },
+        { label: CORE_STAGES[2], secs: 9 },
+        { label: CORE_STAGES[3], secs: 5 },
+        { label: CORE_STAGES[4], secs: 9000 },
+      ]
+    : [
+        { label: CORE_STAGES[0], secs: 3 },
+        { label: CORE_STAGES[1], secs: 7 },
+        { label: CORE_STAGES[2], secs: 8 },
+        { label: CORE_STAGES[3], secs: 5 },
+        { label: CORE_STAGES[4], secs: 9000 },
+      ];
+
+  // Current stage from elapsed seconds (never past the last).
+  let acc = 0;
+  let idx = stages.length - 1;
+  for (let i = 0; i < stages.length; i++) {
+    acc += stages[i].secs;
+    if (elapsed < acc) {
+      idx = i;
+      break;
+    }
+  }
+  const active = stages[idx];
+  const scheduled = stages.slice(0, -1).reduce((s, st) => s + st.secs, 0);
+  const pct = scheduled > 0 ? Math.min(96, (elapsed / scheduled) * 100) : 0;
+  const checklist = stages.filter((s) => s.label !== PREPARING);
+
+  // Surface a few technique guides to read while the analysis runs — the one that
+  // matches this exercise first. Opened in a new tab so the analysis keeps running.
+  const guides = allGuides();
+  const suggested = [
+    ...guides.filter((g) => g.exerciseKey === exerciseKey),
+    ...guides.filter((g) => g.exerciseKey !== exerciseKey),
+  ].slice(0, 4);
 
   return (
     <div className="max-w-lg mx-auto">
       <div className="card p-8">
-        <div className="flex items-center gap-3 mb-6">
+        <div className="flex items-center gap-3 mb-1">
           <span className="relative grid h-9 w-9 place-items-center">
             <span className="absolute inset-0 rounded-full border-2 border-border" />
             <span className="absolute inset-0 rounded-full border-2 border-transparent border-t-accent animate-spin" />
           </span>
           <div className="min-w-0">
-            <div className="text-sm font-medium truncate">Analyzing your {exerciseName}…</div>
-            <div className="label mt-0.5">
-              Estimated time ~20–40s · {elapsed}s elapsed
+            <div key={active.label} className="text-sm font-medium truncate animate-fade-in">
+              {active.label}
             </div>
+            <div className="label mt-0.5">Analyzing your {exerciseName} · {elapsed}s</div>
           </div>
         </div>
+        <p className="text-muted text-xs mb-5 min-h-[1rem]">{active.note ?? ""}</p>
 
-        {/* Indeterminate progress — the request completes when the report is ready. */}
-        <div className="h-1.5 rounded-full bg-surface-2 overflow-hidden mb-2">
-          <div className="h-full w-1/3 bg-accent/60 skeleton" />
+        {/* Progress reflects the calibrated stage timeline; holds near the end. */}
+        <div className="h-1.5 rounded-full bg-surface-2 overflow-hidden mb-5">
+          <div
+            className="h-full bg-accent transition-all duration-700 ease-out"
+            style={{ width: `${Math.max(6, pct)}%` }}
+          />
         </div>
-        <p className="text-muted text-xs">
+
+        {/* Stage checklist — the real pipeline phases, in order. */}
+        <ol className="space-y-2.5">
+          {checklist.map((s) => {
+            const fullIdx = stages.indexOf(s);
+            const done = idx > fullIdx;
+            const on = idx === fullIdx;
+            return (
+              <li key={s.label} className="flex items-center gap-3 text-[13px]">
+                <span
+                  className={`grid h-5 w-5 place-items-center rounded-full text-[10px] transition ${
+                    done ? "bg-good text-accent-fg" : on ? "bg-accent text-accent-fg" : "bg-surface-2 text-muted"
+                  }`}
+                >
+                  {done ? "✓" : on ? <span className="h-1.5 w-1.5 rounded-full bg-current animate-pulse" /> : ""}
+                </span>
+                <span className={done || on ? "text-fg" : "text-muted"}>{s.label}</span>
+              </li>
+            );
+          })}
+        </ol>
+
+        <p className="text-muted text-xs mt-5">
           Keep this tab open — your report opens automatically when it&apos;s done.
         </p>
 
-        {/* While-you-wait guides prompt. Intentionally blank for now. */}
+        {/* While-you-wait: technique guides (open in a new tab so analysis keeps running). */}
         <div className="mt-6 border-t border-border pt-6">
           <h2 className="text-sm font-medium">
-            While you wait — want to see some guides about exercise form and videos?
+            While you wait — brush up on your form
           </h2>
-          <div className="mt-3 grid h-40 place-items-center rounded-xl border border-dashed border-border">
-            <span className="text-xs text-muted">Guides coming soon</span>
+          <p className="text-muted text-xs mt-1">
+            Premium technique guides, opened in a new tab so your analysis keeps running.
+          </p>
+          <div className="mt-3 grid gap-2">
+            {suggested.map((g) => (
+              <a
+                key={g.slug}
+                href={`/guides/${g.slug}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="group flex items-center gap-3 rounded-xl border border-border p-3 transition hover:border-accent hover:bg-surface-2/50"
+              >
+                <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-accent/10 text-accent text-[13px]">
+                  {g.exerciseKey === exerciseKey ? "★" : "›"}
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-sm font-medium">{g.name}</span>
+                  <span className="block truncate text-[11px] text-muted">{g.category}</span>
+                </span>
+                <span className="text-faint transition group-hover:text-accent">↗</span>
+              </a>
+            ))}
           </div>
+          <a href="/guides" target="_blank" rel="noopener noreferrer" className="mt-3 inline-block text-xs text-accent hover:underline">
+            Browse all exercise guides →
+          </a>
         </div>
       </div>
     </div>

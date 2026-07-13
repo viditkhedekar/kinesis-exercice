@@ -40,6 +40,19 @@ export default function CameraPickerPage() {
         subtitle="Pick an exercise, then get real-time rep counting, technique scoring and coaching cues from your camera."
       />
 
+      <div className="mb-4 flex items-start gap-3 rounded-xl border border-orange-500/40 bg-orange-500/10 p-3.5">
+        <span className="mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-full bg-orange-500/20 text-orange-500 text-[13px] font-bold">!</span>
+        <div className="text-sm">
+          <span className="rounded-[5px] border border-orange-500/40 bg-orange-500/15 px-1.5 py-px text-[11px] font-semibold text-orange-500 align-middle">Refining</span>
+          <span className="ml-2 font-medium text-fg">Live Camera Mode is still being refined.</span>
+          <p className="text-muted mt-1 leading-relaxed">
+            On-device pose tracking runs at a lower resolution than our uploaded-video analysis, so
+            real-time rep counts, scores and cues <span className="text-fg">can&apos;t be guaranteed accurate</span> yet.
+            For the most reliable results, record a clip and use <span className="text-fg">New analysis</span> instead.
+          </p>
+        </div>
+      </div>
+
       <div className="card p-5 sm:p-6 space-y-6">
         <div>
           <div className="label mb-2">Exercise</div>

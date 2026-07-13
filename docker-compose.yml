@@ -25,6 +25,14 @@ services:
       KINESIS_STORAGE_DIR: /data/kinesis
       KINESIS_COACH_PROVIDER: ${KINESIS_COACH_PROVIDER:-echo}
       KINESIS_ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # Email verification. Locally defaults to "console" (link is logged, not sent).
+      # For production set EMAIL_PROVIDER=resend + RESEND_API_KEY (or sendgrid / smtp).
+      KINESIS_REQUIRE_EMAIL_VERIFICATION: ${KINESIS_REQUIRE_EMAIL_VERIFICATION:-true}
+      KINESIS_FRONTEND_URL: ${KINESIS_FRONTEND_URL:-http://localhost:3000}
+      KINESIS_EMAIL_PROVIDER: ${KINESIS_EMAIL_PROVIDER:-console}
+      KINESIS_EMAIL_FROM: ${KINESIS_EMAIL_FROM:-physIQal <onboarding@resend.dev>}
+      KINESIS_RESEND_API_KEY: ${RESEND_API_KEY:-}
+      KINESIS_SENDGRID_API_KEY: ${SENDGRID_API_KEY:-}
     ports:
       - "8000:8000"
     volumes:

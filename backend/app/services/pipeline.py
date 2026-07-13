@@ -10,6 +10,7 @@ analysis is available as soon as the request returns.
 from __future__ import annotations
 
 from collections import Counter
+from contextlib import nullcontext
 
 import numpy as np
 
@@ -44,14 +45,23 @@ from app.services.progress import upsert_progress
 from app.services.reps import RepWindow, detect_reps
 from app.services.rules import evaluate_session
 from app.services.storage import get_storage
+from app.services.timing import StageTimer
 
 
-def _set_stage(db, job: AnalysisJob | None, stage: JobStage, progress: float) -> None:
+def _timed(timer: StageTimer | None, name: str):
+    """Time a block when a timer is present; a no-op context otherwise."""
+    return timer.stage(name) if timer is not None else nullcontext()
+
+
+def _set_stage(job: AnalysisJob | None, stage: JobStage, progress: float) -> None:
+    """Advance the job's recorded stage/progress in memory. Analysis is synchronous
+    (nothing polls this mid-run any more), so we intentionally do NOT commit here —
+    the value is persisted by the pipeline's own end-of-run commit. This removes a
+    handful of per-analysis Postgres round-trips."""
     if job is None:
         return
     job.stage = stage
     job.progress = progress
-    db.commit()
 
 
 def _detect_reps_per_set(
@@ -156,7 +166,7 @@ def _previous_session(db, session: Session) -> Session | None:
     return db.scalar(stmt)
 
 
-def run_pipeline(session_id: int) -> None:
+def run_pipeline(session_id: int, timer: StageTimer | None = None) -> None:
     settings = get_settings()
     storage = get_storage()
     db = SessionLocal()
@@ -166,31 +176,43 @@ def run_pipeline(session_id: int) -> None:
             return
         job = session.job
         session.status = SessionStatus.processing
-        db.commit()
+        _set_stage(job, JobStage.pose, 0.1)
 
-        # 1. Pose estimation (temporally downsampled + downscaled for speed)
-        _set_stage(db, job, JobStage.pose, 0.1)
+        # 1. Pose estimation (temporally downsampled + downscaled for speed). The
+        #    sub-stage timings (video load, model init, frame extraction, inference)
+        #    are filled into ``pose_timings`` and merged into the report.
+        pose_timings: dict[str, float] = {}
         pose = run_pose(
             session.video.path,
             str(settings.pose_model_path),
             target_fps=settings.pose_target_fps,
             max_dim=settings.pose_max_dim,
             max_frames=settings.pose_max_frames,
+            timings=pose_timings,
         )
+        if timer is not None:
+            timer.merge(pose_timings)
+            timer.note("frames", len(pose.landmarks))
+            timer.note("effective_fps", round(pose.fps, 1))
+
         session.video.fps = pose.fps
         session.video.duration = pose.duration
         session.video.width = pose.width
         session.video.height = pose.height
         landmarks_path = storage.artifact_path(session_id, "landmarks.npz")
-        save_landmarks(landmarks_path, pose)
+        with _timed(timer, "save_landmarks"):
+            save_landmarks(landmarks_path, pose)
         if session.artifact is None:
             db.add(AnalysisArtifact(session_id=session_id, landmarks_path=landmarks_path))
-        db.commit()
+        # One durable commit here so the expensive pose result survives any later
+        # (cheap) error, rather than committing at every stage.
+        with _timed(timer, "db_write_pose"):
+            db.commit()
 
         config = load_exercise(session.exercise_key)
 
         # Steps 2–6 are pure and landmark-driven — shared with Live Camera Mode.
-        run_pipeline_from_landmarks(db, session, pose, config, job=job)
+        run_pipeline_from_landmarks(db, session, pose, config, job=job, timer=timer)
     except Exception as exc:  # noqa: BLE001
         db.rollback()
         session = db.get(Session, session_id)
@@ -214,6 +236,7 @@ def run_pipeline_from_landmarks(
     job: AnalysisJob | None = None,
     set_bounds: list[tuple[int, int]] | None = None,
     extra_summary: dict | None = None,
+    timer: StageTimer | None = None,
 ) -> None:
     """Steps 2–6 of the analysis pipeline, driven purely by a landmark array.
 
@@ -230,22 +253,27 @@ def run_pipeline_from_landmarks(
     bounds = set_bounds or [(0, max(0, F - 1))]
 
     # 2. Biomechanics (computed once over the full buffer; global-aligned).
-    _set_stage(db, job, JobStage.biomechanics, 0.4)
-    metrics = compute_metrics(landmarks, config)
+    _set_stage(job, JobStage.biomechanics, 0.4)
+    with _timed(timer, "biomechanics"):
+        metrics = compute_metrics(landmarks, config)
 
     # 3. Rep detection — per set slice, offset back to global frame indices.
-    _set_stage(db, job, JobStage.reps, 0.6)
-    rep_pairs = _detect_reps_per_set(metrics, config, fps, bounds)
-    rep_windows = [rw for rw, _ in rep_pairs]
-    set_of_rep = {rw.index: si for rw, si in rep_pairs}
+    _set_stage(job, JobStage.reps, 0.6)
+    with _timed(timer, "rep_detection"):
+        rep_pairs = _detect_reps_per_set(metrics, config, fps, bounds)
+        rep_windows = [rw for rw, _ in rep_pairs]
+        set_of_rep = {rw.index: si for rw, si in rep_pairs}
 
     # 4. Rule evaluation + scoring (per-rep rules are global; session-level rules
     #    span the whole workout).
-    _set_stage(db, job, JobStage.rules, 0.75)
-    scored = evaluate_session(rep_windows, metrics, landmarks, config, fps)
+    _set_stage(job, JobStage.rules, 0.75)
+    with _timed(timer, "scoring"):
+        scored = evaluate_session(rep_windows, metrics, landmarks, config, fps)
     fault_counter: Counter[str] = Counter()
     rep_outs: list[RepOut] = []
     for sr in scored:
+        # Attach faults via the relationship so the whole rep + its faults insert
+        # in one batched flush — no per-rep flush round-trip to fetch the id.
         rep_row = Rep(
             session_id=session_id,
             index=sr.rep.index,
@@ -256,25 +284,24 @@ def run_pipeline_from_landmarks(
             rom=round(sr.rep.rom, 2),
             set_index=set_of_rep.get(sr.rep.index),
         )
+        rep_row.faults = [
+            Fault(
+                type=f.type,
+                severity=FaultSeverity(f.severity),
+                message=f.message,
+                tip=f.tip,
+                start_frame=f.start_frame,
+                end_frame=f.end_frame,
+                value=f.value,
+                unit=f.unit,
+                confidence=f.confidence,
+                joints=f.joints,
+            )
+            for f in sr.faults
+        ]
         db.add(rep_row)
-        db.flush()
         fault_outs: list[FaultOut] = []
         for f in sr.faults:
-            db.add(
-                Fault(
-                    rep_id=rep_row.id,
-                    type=f.type,
-                    severity=FaultSeverity(f.severity),
-                    message=f.message,
-                    tip=f.tip,
-                    start_frame=f.start_frame,
-                    end_frame=f.end_frame,
-                    value=f.value,
-                    unit=f.unit,
-                    confidence=f.confidence,
-                    joints=f.joints,
-                )
-            )
             fault_counter[f.type] += 1
             fault_outs.append(FaultOut(**f.__dict__))
         rep_outs.append(
@@ -288,50 +315,53 @@ def run_pipeline_from_landmarks(
                 faults=fault_outs,
             )
         )
-    db.commit()
+    # Flush (not commit) so the reps are visible to the progress query below;
+    # the whole transaction is committed once at the end.
+    with _timed(timer, "db_write_reps"):
+        db.flush()
 
     # 4b. Aggregate into a sports-science summary.
-    rep_fault_pairs = [(sr.rep.index, f) for sr in scored for f in sr.faults]
-    groups = group_faults(rep_fault_pairs)
-    view = camera_view(landmarks)
-    km = key_metrics(rep_windows, metrics, config, fps, view)
-    overall = overall_score(groups, len(rep_windows))
+    with _timed(timer, "aggregation"):
+        rep_fault_pairs = [(sr.rep.index, f) for sr in scored for f in sr.faults]
+        groups = group_faults(rep_fault_pairs)
+        view = camera_view(landmarks)
+        km = key_metrics(rep_windows, metrics, config, fps, view)
+        overall = overall_score(groups, len(rep_windows))
 
-    # When the clip can't be trusted (wrong exercise / no subject) there's no
-    # meaningful technique score — a scoreless report reads "--" rather than a
-    # misleading 100. Otherwise store the computed score.
-    warning = _assess_quality(landmarks, metrics, config, len(rep_windows))
-    trustworthy = warning is None
-    session.overall_score = overall if trustworthy else None
+        # When the clip can't be trusted (wrong exercise / no subject) there's no
+        # meaningful technique score — a scoreless report reads "--" rather than a
+        # misleading 100. Otherwise store the computed score.
+        warning = _assess_quality(landmarks, metrics, config, len(rep_windows))
+        trustworthy = warning is None
+        session.overall_score = overall if trustworthy else None
 
-    # Concise, data-grounded observations (incl. change vs the previous session).
-    prev = _previous_session(db, session)
-    prev_summary = (prev.summary or {}) if prev else {}
-    try:
-        insights = generate_insights(
-            reps=rep_windows, metrics=metrics, config=config, fps=fps,
-            groups=groups, km=km, overall=overall,
-            prev_km=prev_summary.get("key_metrics"),
-            prev_overall=prev.overall_score if prev else None,
-        )
-    except Exception:  # noqa: BLE001 — insights must never fail the pipeline
-        insights = []
+        # Concise, data-grounded observations (incl. change vs the previous session).
+        prev = _previous_session(db, session)
+        prev_summary = (prev.summary or {}) if prev else {}
+        try:
+            insights = generate_insights(
+                reps=rep_windows, metrics=metrics, config=config, fps=fps,
+                groups=groups, km=km, overall=overall,
+                prev_km=prev_summary.get("key_metrics"),
+                prev_overall=prev.overall_score if prev else None,
+            )
+        except Exception:  # noqa: BLE001 — insights must never fail the pipeline
+            insights = []
 
-    summary: dict = {
-        "grade": grade(overall) if trustworthy else "",
-        "key_metrics": km,
-        "strengths": strengths(groups, km, config) if trustworthy else [],
-        "insights": insights,
-    }
-    if warning:
-        summary["analysis_warning"] = warning
-    if extra_summary:
-        summary.update(extra_summary)
-    session.summary = summary
-    db.commit()
+        summary: dict = {
+            "grade": grade(overall) if trustworthy else "",
+            "key_metrics": km,
+            "strengths": strengths(groups, km, config) if trustworthy else [],
+            "insights": insights,
+        }
+        if warning:
+            summary["analysis_warning"] = warning
+        if extra_summary:
+            summary.update(extra_summary)
+        session.summary = summary
 
     # 5. AI coaching (explains the structured report only).
-    _set_stage(db, job, JobStage.coaching, 0.9)
+    _set_stage(job, JobStage.coaching, 0.9)
     avg_score = round(sum(r.score for r in rep_outs) / len(rep_outs), 1) if rep_outs else 0.0
     report = AnalysisReport(
         exercise_key=config.key,
@@ -342,16 +372,22 @@ def run_pipeline_from_landmarks(
         fault_summary=dict(fault_counter),
     )
     coach = get_coach()
-    try:
-        text = coach.explain(report)
-    except Exception as exc:  # noqa: BLE001 — coaching must never fail the pipeline
-        text = f"(Coaching unavailable: {exc})"
+    with _timed(timer, "ai_feedback"):
+        try:
+            text = coach.explain(report)
+        except Exception as exc:  # noqa: BLE001 — coaching must never fail the pipeline
+            text = f"(Coaching unavailable: {exc})"
     db.add(CoachingNote(session_id=session_id, provider=coach.name, text=text))
-    db.commit()
 
     # 6. Progress aggregation.
-    _set_stage(db, job, JobStage.progress, 0.97)
-    upsert_progress(db, session_id)
+    _set_stage(job, JobStage.progress, 0.97)
+    with _timed(timer, "progress"):
+        upsert_progress(db, session_id)
 
     session.status = SessionStatus.complete
-    _set_stage(db, job, JobStage.done, 1.0)
+    _set_stage(job, JobStage.done, 1.0)
+
+    # Single end-of-run commit persists reps, faults, summary, coaching, progress
+    # and the final job stage together — one round-trip instead of ~6.
+    with _timed(timer, "db_commit"):
+        db.commit()

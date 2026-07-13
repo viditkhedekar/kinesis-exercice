@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session as DbSession
@@ -8,13 +10,41 @@ from app.api.deps import get_current_user
 from app.config import get_settings
 from app.db import get_db
 from app.models import User
-from app.schemas import ForgotIn, LoginIn, PrefsIn, RegisterIn, ResetIn, UserOut
+from app.schemas import (
+    ForgotIn,
+    LoginIn,
+    PrefsIn,
+    RegisterIn,
+    RegisterOut,
+    ResendOut,
+    ResendVerificationIn,
+    ResetIn,
+    UserOut,
+    VerifyEmailIn,
+)
 from app.services.auth import create_token, decode_token, hash_password, verify_password
+from app.services.email import EmailError
+from app.services.verification import (
+    consume_token,
+    is_valid_email,
+    issue_token,
+    seconds_until_resend_allowed,
+    send_verification_email,
+)
+
+logger = logging.getLogger("kinesis.auth")
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 settings = get_settings()
 
 DEFAULT_PREFS = {"onboarded": False, "goals": [], "exercises": []}
+
+# Verification codes the frontend keys off (kept human-readable in the message too).
+_VERIFY_MESSAGES = {
+    "invalid": "This verification link is invalid. Request a new one below.",
+    "used": "This verification link has already been used. Try logging in, or request a new link.",
+    "expired": "This verification link has expired. Request a new one below.",
+}
 
 
 def _cookie_samesite_secure() -> tuple[str, bool]:
@@ -44,26 +74,43 @@ def _set_session_cookie(response: Response, user_id: int, remember: bool) -> Non
     )
 
 
-@router.post("/register", response_model=UserOut, status_code=201)
-def register(body: RegisterIn, response: Response, db: DbSession = Depends(get_db)) -> UserOut:
+def _dispatch_verification(db: DbSession, user: User) -> None:
+    """Issue a token and send the verification email. Never fails the request on a
+    delivery error — the account exists and the user can resend from the UI."""
+    raw = issue_token(db, user)
+    db.commit()
+    try:
+        send_verification_email(user, raw)
+    except EmailError as exc:  # provider down / misconfigured
+        logger.error("Verification email to %s failed: %s", user.email, exc)
+
+
+@router.post("/register", response_model=RegisterOut, status_code=201)
+def register(body: RegisterIn, db: DbSession = Depends(get_db)) -> RegisterOut:
     email = body.email.strip().lower()
-    if not email or "@" not in email:
-        raise HTTPException(400, "A valid email is required")
+    if not is_valid_email(email):
+        raise HTTPException(400, "Please enter a valid email address.")
     if len(body.password) < 8:
         raise HTTPException(400, "Password must be at least 8 characters")
     if db.scalar(select(User).where(User.email == email)):
         raise HTTPException(409, "An account with this email already exists")
+
     user = User(
         email=email,
         name=body.name.strip(),
         password_hash=hash_password(body.password),
+        email_verified=False,
         prefs=dict(DEFAULT_PREFS),
     )
     db.add(user)
-    db.commit()
-    db.refresh(user)
-    _set_session_cookie(response, user.id, remember=True)
-    return UserOut.model_validate(user)
+    db.flush()
+    _dispatch_verification(db, user)
+
+    return RegisterOut(
+        email=email,
+        verification_required=True,
+        message="Account created. Check your inbox to confirm your email address.",
+    )
 
 
 @router.post("/login", response_model=UserOut)
@@ -72,8 +119,55 @@ def login(body: LoginIn, response: Response, db: DbSession = Depends(get_db)) ->
     user = db.scalar(select(User).where(User.email == email))
     if user is None or not verify_password(body.password, user.password_hash):
         raise HTTPException(401, "Incorrect email or password")
+    if settings.require_email_verification and not user.email_verified:
+        # 403 (not 401) so the client can distinguish "verify your email" from
+        # "wrong credentials" and route to the check-inbox / resend flow.
+        raise HTTPException(
+            403, "Please verify your email address before logging in. Check your inbox."
+        )
     _set_session_cookie(response, user.id, remember=body.remember)
     return UserOut.model_validate(user)
+
+
+@router.post("/verify-email", response_model=UserOut)
+def verify_email(
+    body: VerifyEmailIn, response: Response, db: DbSession = Depends(get_db)
+) -> UserOut:
+    """Validate a verification token, mark the user verified, and log them in."""
+    user, reason = consume_token(db, body.token.strip())
+    if user is None:
+        raise HTTPException(400, _VERIFY_MESSAGES.get(reason, _VERIFY_MESSAGES["invalid"]))
+    db.commit()
+    _set_session_cookie(response, user.id, remember=True)
+    return UserOut.model_validate(user)
+
+
+@router.post("/resend-verification", response_model=ResendOut)
+def resend_verification(body: ResendVerificationIn, db: DbSession = Depends(get_db)) -> ResendOut:
+    """Re-send the verification email, rate-limited by a cooldown. The response is
+    deliberately uniform so it never reveals whether an account exists."""
+    cooldown = settings.email_resend_cooldown_seconds
+    generic = ResendOut(
+        sent=True,
+        retry_after=cooldown,
+        message="If that email needs verification, we've sent a new link. Check your inbox.",
+    )
+    email = body.email.strip().lower()
+    if not is_valid_email(email):
+        raise HTTPException(400, "Please enter a valid email address.")
+
+    user = db.scalar(select(User).where(User.email == email))
+    if user is None or user.email_verified:
+        return generic  # nothing to do, but don't leak that
+
+    wait = seconds_until_resend_allowed(db, user)
+    if wait > 0:
+        raise HTTPException(
+            429, f"Please wait {wait}s before requesting another verification email."
+        )
+
+    _dispatch_verification(db, user)
+    return generic
 
 
 @router.post("/logout", status_code=204)

@@ -37,6 +37,12 @@ _ADDED_COLUMNS: dict[str, list[tuple[str, str]]] = {
     "reps": [
         ("set_index", "INTEGER"),
     ],
+    # Email verification. Existing accounts predate the feature, so backfill them
+    # as verified (DEFAULT TRUE) — new rows are inserted with FALSE by the ORM.
+    "users": [
+        ("email_verified", "BOOLEAN NOT NULL DEFAULT TRUE"),
+        ("verified_at", "TIMESTAMP WITH TIME ZONE"),
+    ],
 }
 
 # Columns that were originally NOT NULL but must now allow NULL to represent

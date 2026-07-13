@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import AuthCard from "@/components/AuthCard";
 import { useAuth } from "@/components/AuthProvider";
 import { ApiError } from "@/lib/api";
+import { isValidEmail } from "@/lib/validation";
 
 export default function LoginPage() {
   const { login, user } = useAuth();
@@ -22,12 +23,21 @@ export default function LoginPage() {
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    setBusy(true);
     setError(null);
+    if (!isValidEmail(email)) {
+      setError("Please enter a valid email address.");
+      return;
+    }
+    setBusy(true);
     try {
       const u = await login(email, password, remember);
       router.replace(u.prefs?.onboarded ? "/dashboard" : "/onboarding");
     } catch (err) {
+      // 403 = account exists but email isn't verified → send to the inbox flow.
+      if (err instanceof ApiError && err.status === 403) {
+        router.replace(`/verify-email?email=${encodeURIComponent(email.trim())}`);
+        return;
+      }
       setError(err instanceof ApiError ? err.message : "Login failed");
       setBusy(false);
     }

@@ -13,11 +13,28 @@ import hashlib
 import hmac
 import json
 import os
+import secrets
 import time
 
 from app.config import get_settings
 
 _ITERATIONS = 200_000
+
+
+# --------------------- single-use verification tokens --------------------- #
+# Unlike the stateless HMAC session/reset tokens above, verification tokens are
+# random secrets tracked in the DB by their hash, so they can be single-use and
+# revocable. Only ``hash_token(raw)`` is ever stored; the raw value lives only in
+# the emailed link.
+
+def new_verification_token() -> str:
+    """A high-entropy, URL-safe token for email verification links."""
+    return secrets.token_urlsafe(32)
+
+
+def hash_token(raw: str) -> str:
+    """SHA-256 hex digest — what we persist and look up by."""
+    return hashlib.sha256(raw.encode()).hexdigest()
 
 
 # --------------------------- passwords --------------------------- #

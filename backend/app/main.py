@@ -61,5 +61,9 @@ app.include_router(stats_router)
 
 
 @app.get("/health")
-def health() -> dict[str, str]:
-    return {"status": "ok"}
+def health() -> dict[str, object]:
+    # ``pose_warm`` is False until the first analysis has loaded the engine, so the
+    # client can show a one-time "preparing the analysis engine" status.
+    from app.services.pose import is_pose_warm
+
+    return {"status": "ok", "pose_warm": is_pose_warm()}

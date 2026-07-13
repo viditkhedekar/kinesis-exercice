@@ -6,6 +6,7 @@ import { useState } from "react";
 import AuthCard from "@/components/AuthCard";
 import { useAuth } from "@/components/AuthProvider";
 import { ApiError } from "@/lib/api";
+import { isValidEmail } from "@/lib/validation";
 
 export default function SignupPage() {
   const { register } = useAuth();
@@ -18,11 +19,20 @@ export default function SignupPage() {
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    setBusy(true);
     setError(null);
+    if (!isValidEmail(email)) {
+      setError("Please enter a valid email address.");
+      return;
+    }
+    if (password.length < 8) {
+      setError("Password must be at least 8 characters.");
+      return;
+    }
+    setBusy(true);
     try {
       await register(email, name, password);
-      router.replace("/onboarding");
+      // Account created but unverified — send them to confirm their inbox.
+      router.replace(`/verify-email?email=${encodeURIComponent(email.trim())}`);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Sign up failed");
       setBusy(false);

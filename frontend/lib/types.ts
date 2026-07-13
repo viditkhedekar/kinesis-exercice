@@ -14,7 +14,20 @@ export interface User {
   id: number;
   email: string;
   name: string;
+  email_verified: boolean;
   prefs: UserPrefs | null;
+}
+
+export interface RegisterResult {
+  email: string;
+  verification_required: boolean;
+  message: string;
+}
+
+export interface ResendResult {
+  sent: boolean;
+  retry_after: number; // seconds until another resend is allowed
+  message: string;
 }
 
 export interface StatRecent {

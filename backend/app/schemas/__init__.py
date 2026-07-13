@@ -27,10 +27,31 @@ class RegisterIn(BaseModel):
     password: str
 
 
+class RegisterOut(BaseModel):
+    """Registration succeeds but does not log the user in — they must verify first."""
+    email: str
+    verification_required: bool = True
+    message: str
+
+
 class LoginIn(BaseModel):
     email: str
     password: str
     remember: bool = False
+
+
+class VerifyEmailIn(BaseModel):
+    token: str
+
+
+class ResendVerificationIn(BaseModel):
+    email: str
+
+
+class ResendOut(BaseModel):
+    sent: bool
+    retry_after: int = 0   # seconds to wait before another resend is allowed
+    message: str
 
 
 class ForgotIn(BaseModel):
@@ -52,6 +73,7 @@ class UserOut(BaseModel):
     id: int
     email: str
     name: str
+    email_verified: bool = True
     prefs: dict | None = None
 
 

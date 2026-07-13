@@ -9,6 +9,7 @@ MediaPipe and OpenCV are imported lazily so the pure-Python analysis modules
 """
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -26,6 +27,16 @@ class PoseResult:
     height: int
 
 
+# Whether pose has run at least once in this process. The first analysis after a
+# server start pays a one-time cost (lazy-importing MediaPipe/OpenCV + loading the
+# model), so the UI shows a "preparing the engine" status only while this is False.
+_POSE_WARM = False
+
+
+def is_pose_warm() -> bool:
+    return _POSE_WARM
+
+
 def run_pose(
     video_path: str,
     model_path: str,
@@ -33,6 +44,7 @@ def run_pose(
     target_fps: float = 12.0,
     max_dim: int = 640,
     max_frames: int = 600,
+    timings: dict[str, float] | None = None,
 ) -> PoseResult:
     """Estimate pose over a clip, temporally downsampled and spatially downscaled.
 
@@ -56,6 +68,9 @@ def run_pose(
             "(see backend/app/services/pose/models/README.md)."
         )
 
+    _t = time.perf_counter
+    _open0 = _t()
+
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         raise RuntimeError(f"Could not open video: {video_path}")
@@ -76,6 +91,7 @@ def run_pose(
     # Take every ``step``-th source frame to approximate ``target_fps``.
     step = max(1, round(src_fps / target_fps)) if target_fps > 0 else 1
     effective_fps = src_fps / step
+    _video_open_s = _t() - _open0
 
     # Pin the CPU delegate: this is a headless server with no GPU/display, so we
     # never want MediaPipe to attempt to create an OpenGL/EGL context at runtime.
@@ -93,8 +109,14 @@ def run_pose(
         min_tracking_confidence=0.5,
     )
 
+    _init0 = _t()
+    landmarker = mp_vision.PoseLandmarker.create_from_options(options)
+    _init_s = _t() - _init0
+
     frames: list[np.ndarray] = []
-    with mp_vision.PoseLandmarker.create_from_options(options) as landmarker:
+    extract_s = 0.0   # cumulative decode + downscale + colour-convert
+    infer_s = 0.0     # cumulative MediaPipe inference
+    try:
         src_idx = 0   # index into the source stream
         kept = 0      # number of frames actually processed
         while kept < max_frames:
@@ -103,6 +125,7 @@ def run_pose(
             if not cap.grab():
                 break
             if src_idx % step == 0:
+                _e0 = _t()
                 ok, frame_bgr = cap.retrieve()
                 if not ok:
                     break
@@ -120,11 +143,28 @@ def run_pose(
                 frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
                 mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
                 timestamp_ms = int(kept * 1000.0 / effective_fps)
+                extract_s += _t() - _e0
+
+                _i0 = _t()
                 result = landmarker.detect_for_video(mp_image, timestamp_ms)
+                infer_s += _t() - _i0
+
                 frames.append(_extract(result))
                 kept += 1
             src_idx += 1
-    cap.release()
+    finally:
+        landmarker.close()
+        cap.release()
+
+    if timings is not None:
+        timings["video_loaded"] = _video_open_s
+        timings["pose_model_init"] = _init_s
+        timings["frame_extraction"] = extract_s
+        timings["pose_estimation"] = infer_s
+
+    # The engine is now warm for the rest of this process's life.
+    global _POSE_WARM
+    _POSE_WARM = True
 
     arr = (
         np.stack(frames)
