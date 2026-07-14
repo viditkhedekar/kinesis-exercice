@@ -187,7 +187,7 @@ def run_pipeline(session_id: int, timer: StageTimer | None = None) -> None:
         pose_engine_cold = not is_pose_warm()
         pose = run_pose(
             session.video.path,
-            str(settings.pose_model_path),
+            settings.pose_model_file(),
             target_fps=settings.pose_target_fps,
             max_dim=settings.pose_max_dim,
             max_frames=settings.pose_max_frames,
@@ -196,7 +196,9 @@ def run_pipeline(session_id: int, timer: StageTimer | None = None) -> None:
         if timer is not None:
             timer.merge(pose_timings)
             timer.note("frames", len(pose.landmarks))
-            timer.note("effective_fps", round(pose.fps, 1))
+            timer.note("source_fps", round(pose.source_fps, 1))
+            timer.note("processed_fps", round(pose.fps, 1))
+            timer.note("resolution", f"{pose.width}x{pose.height}")
             timer.note("pose_engine", "cold (loaded from scratch)" if pose_engine_cold else "warm (reused)")
 
         session.video.fps = pose.fps

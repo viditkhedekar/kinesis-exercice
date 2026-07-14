@@ -87,7 +87,7 @@ def series_for(metrics, config, reps, n) -> dict:
 def process(video, key, name) -> dict:
     print(f"\n=== {name} ({key}) — {video} ===", flush=True)
     config = load_exercise(key)
-    model = str(get_settings().pose_model_path)
+    model = get_settings().pose_model_file()
     pose = run_pose(video, model, target_fps=TARGET_FPS, max_dim=MAX_DIM, max_frames=MAX_FRAMES)
     lm = pose.landmarks
     metrics = compute_metrics(lm, config)

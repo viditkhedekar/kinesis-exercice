@@ -10,6 +10,13 @@ from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# MediaPipe pose "complexity" -> Tasks model bundle filename (0=lite, 1=full, 2=heavy).
+_POSE_MODEL_FILES = {
+    0: "pose_landmarker_lite.task",
+    1: "pose_landmarker_full.task",
+    2: "pose_landmarker_heavy.task",
+}
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="KINESIS_", env_file=".env", extra="ignore")
@@ -26,8 +33,16 @@ class Settings(BaseSettings):
     exercises_dir: Path = Path(__file__).parent / "exercises"
 
     # --- Pose model ---
-    # Path to the MediaPipe PoseLandmarker .task model file.
-    pose_model_path: Path = Path(__file__).parent / "services" / "pose" / "models" / "pose_landmarker.task"
+    # Directory holding the MediaPipe PoseLandmarker .task bundles.
+    pose_models_dir: Path = Path(__file__).parent / "services" / "pose" / "models"
+    # Model "complexity" is selected by which .task file is loaded (the Tasks API
+    # has no runtime complexity flag): 0=lite (fastest), 1=full (balanced default),
+    # 2=heavy (most accurate, slowest). Benchmark with scripts/benchmark_pose.py and
+    # set KINESIS_POSE_MODEL_COMPLEXITY to the fastest that keeps landmark accuracy.
+    pose_model_complexity: int = 1
+    # Explicit model-file override. When unset, the path is derived from the
+    # complexity above (falling back to the legacy ``pose_landmarker.task`` name).
+    pose_model_path: Path | None = None
 
     # --- Pose estimation performance ---
     # Pose runs one CPU inference per processed frame — the dominant cost. To keep
@@ -35,8 +50,14 @@ class Settings(BaseSettings):
     # temporally downsample to a target fps, downscale each frame, and cap the total
     # number of processed frames. These are plenty of temporal/spatial resolution
     # for rep detection and joint-angle measurement.
-    pose_target_fps: float = 12.0     # sample the source down to ~this fps
-    pose_max_dim: int = 640           # downscale so the longest side is <= this
+    # ~10 fps (a 30fps clip is sampled every 3rd frame) keeps enough temporal
+    # resolution for rep counting and technique while cutting frames ~a third vs 15.
+    pose_target_fps: float = 10.0     # sample the source down to ~this fps
+    # Longest side is capped to this before inference. 640 is already well under
+    # 720p and MediaPipe internally rescales to ~256px, so this is lossless for the
+    # analysis while making decode/preprocess cheaper. The original upload is never
+    # modified — this only downscales frames in memory for pose.
+    pose_max_dim: int = 640           # downscale so the longest side is <= this (<=720p)
     pose_max_frames: int = 600        # hard cap on processed frames (bounds runtime)
 
     # --- Auth ---
@@ -79,6 +100,19 @@ class Settings(BaseSettings):
 
     # --- API ---
     cors_origins: list[str] = ["http://localhost:3000"]
+
+    def pose_model_file(self) -> str:
+        """Resolve the pose model path: explicit override, else the file for the
+        configured complexity, else the legacy generic ``pose_landmarker.task``
+        (kept for existing installs / the committed dev model)."""
+        if self.pose_model_path is not None:
+            return str(self.pose_model_path)
+        name = _POSE_MODEL_FILES.get(self.pose_model_complexity, _POSE_MODEL_FILES[1])
+        candidate = self.pose_models_dir / name
+        if candidate.exists():
+            return str(candidate)
+        legacy = self.pose_models_dir / "pose_landmarker.task"
+        return str(legacy if legacy.exists() else candidate)
 
 
 @lru_cache

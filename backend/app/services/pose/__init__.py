@@ -24,10 +24,11 @@ logger = logging.getLogger("kinesis.pose")
 @dataclass
 class PoseResult:
     landmarks: np.ndarray  # (F, 33, 4)
-    fps: float
+    fps: float             # effective (processed) fps
     duration: float
     width: int
     height: int
+    source_fps: float = 0.0  # original video fps, before temporal downsampling
 
 
 # Whether pose has run at least once in this process. The first analysis after a
@@ -142,6 +143,8 @@ def run_pose(
     frames: list[np.ndarray] = []
     extract_s = 0.0   # cumulative decode + downscale + colour-convert
     infer_s = 0.0     # cumulative MediaPipe inference
+    out_w = 0         # analysed (downscaled) frame dims, for logging
+    out_h = 0
     try:
         src_idx = 0   # index into the source stream
         kept = 0      # number of frames actually processed
@@ -166,6 +169,8 @@ def run_pose(
                     frame_bgr = cv2.resize(
                         frame_bgr, (round(w * scale), round(h * scale)), interpolation=cv2.INTER_AREA
                     )
+                if not out_w:
+                    out_h, out_w = frame_bgr.shape[:2]
                 frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
                 mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
                 timestamp_ms = int(kept * 1000.0 / effective_fps)
@@ -188,6 +193,14 @@ def run_pose(
         timings["frame_extraction"] = extract_s
         timings["pose_estimation"] = infer_s
 
+    # Source vs processed sampling + resolution — the levers behind analysis time.
+    logger.info(
+        "pose sampling: source=%.1ffps → processed=%.1ffps (every %d frame(s), target %.1f), "
+        "%d frames analysed; input %dx%d → analysed %dx%d (max_dim=%d)",
+        src_fps, effective_fps, step, target_fps,
+        kept, width, height, out_w, out_h, max_dim,
+    )
+
     # The engine is now warm for the rest of this process's life.
     _POSE_WARM = True
 
@@ -197,7 +210,10 @@ def run_pose(
         else np.full((0, NUM_LANDMARKS, 4), np.nan, dtype=np.float32)
     )
     duration = len(frames) / effective_fps if effective_fps else 0.0
-    return PoseResult(landmarks=arr, fps=effective_fps, duration=duration, width=width, height=height)
+    return PoseResult(
+        landmarks=arr, fps=effective_fps, duration=duration,
+        width=width, height=height, source_fps=src_fps,
+    )
 
 
 def _extract(result) -> np.ndarray:

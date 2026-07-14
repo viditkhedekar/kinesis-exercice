@@ -19,10 +19,18 @@ RUN pip install --no-cache-dir .
 
 COPY . .
 
-# Download the MediaPipe Pose Landmarker model at build time.
+# Download the MediaPipe Pose Landmarker models at build time. All three
+# complexities are fetched so KINESIS_POSE_MODEL_COMPLEXITY (0=lite, 1=full,
+# 2=heavy) can be switched without a rebuild, and scripts/benchmark_pose.py can
+# compare them. The runtime default is "full" (complexity 1).
+ARG MP_BASE=https://storage.googleapis.com/mediapipe-models/pose_landmarker
 RUN mkdir -p app/services/pose/models && \
-    curl -L -o app/services/pose/models/pose_landmarker.task \
-    https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/latest/pose_landmarker_full.task
+    curl -L -o app/services/pose/models/pose_landmarker_lite.task \
+      ${MP_BASE}/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task && \
+    curl -L -o app/services/pose/models/pose_landmarker_full.task \
+      ${MP_BASE}/pose_landmarker_full/float16/latest/pose_landmarker_full.task && \
+    curl -L -o app/services/pose/models/pose_landmarker_heavy.task \
+      ${MP_BASE}/pose_landmarker_heavy/float16/latest/pose_landmarker_heavy.task
 
 ENV PYTHONUNBUFFERED=1
 
