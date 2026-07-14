@@ -4,14 +4,27 @@ Output is a dense per-frame landmark array of shape ``(F, 33, 4)`` where the
 last axis is ``(x, y, z, visibility)`` in normalized image coordinates (x, y in
 0..1). Frames with no detection are filled with NaN / visibility 0.
 
-MediaPipe and OpenCV are imported lazily so the pure-Python analysis modules
+Frame decoding prefers **FFmpeg**: a single ``ffmpeg`` subprocess decodes,
+downscales (longest side <= ``max_dim``) and temporally decimates (to
+``target_fps``) the clip in optimised C, then streams the resulting frames over a
+pipe one at a time straight into MediaPipe. Compared to the previous OpenCV loop
+this (a) does the scale + colour-convert in C on only the frames we keep, and
+(b) hands us just the decimated frames — so we no longer pay Python-side
+per-frame overhead for the ~2/3 of frames we discard. When ffmpeg/ffprobe are
+not on PATH (e.g. local dev) we fall back to the OpenCV decoder, which is
+functionally identical (same normalized landmarks).
+
+MediaPipe/OpenCV/ffmpeg are used lazily so the pure-Python analysis modules
 (biomechanics, reps, rules) and their tests don't require the heavy CV stack.
 """
 from __future__ import annotations
 
+import json
 import logging
+import shutil
+import subprocess
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -41,207 +54,92 @@ def is_pose_warm() -> bool:
     return _POSE_WARM
 
 
-def run_pose(
-    video_path: str,
-    model_path: str,
-    *,
-    target_fps: float = 12.0,
-    max_dim: int = 640,
-    max_frames: int = 600,
-    timings: dict[str, float] | None = None,
-) -> PoseResult:
-    """Estimate pose over a clip, temporally downsampled and spatially downscaled.
+@dataclass
+class _Decoded:
+    """Result of walking a clip: the per-frame landmarks plus stage timings and
+    frame counts, filled by whichever decoder ran."""
+    frames: list[np.ndarray] = field(default_factory=list)
+    decode_s: float = 0.0     # time decoding source frames (grab / pipe read)
+    extract_s: float = 0.0    # colour-convert / reshape / resize of kept frames
+    infer_s: float = 0.0      # MediaPipe inference on kept frames
+    grabbed: int = 0          # source frames handled by our process
+    kept: int = 0             # frames actually run through inference
+    width: int = 0            # source display resolution
+    height: int = 0
+    out_w: int = 0            # analysed (downscaled) resolution
+    out_h: int = 0
+    src_fps: float = 0.0
+    effective_fps: float = 0.0
 
-    Pose is one CPU inference per processed frame, so runtime is driven by the
-    number of processed frames. We therefore sample the source down to
-    ``target_fps`` and cap the total at ``max_frames``; the returned ``fps`` is the
-    *effective* sampled fps, so every downstream frame index and timestamp (rep
-    windows, joint-angle series, the video overlay) maps back to real time as
-    ``frame / fps``. Landmark coordinates are normalized (0..1), so downscaling
-    frames before inference is lossless for the analysis while cutting per-frame
-    pre-processing cost.
-    """
-    # First analysis in this process pays the cold cost: lazily importing the CV
-    # stack (below) + constructing the landmarker graph. On later analyses those
-    # modules are reused from ``sys.modules`` (in memory), though the landmarker
-    # graph itself is still rebuilt per analysis (a fresh instance keeps the
-    # per-request thread safe). We log which case this is so the Render logs show
-    # whether a slow analysis paid the cold-start penalty.
-    global _POSE_WARM
-    cold_start = not _POSE_WARM
 
-    import cv2  # lazy
-    import mediapipe as mp
-    from mediapipe.tasks import python as mp_python
-    from mediapipe.tasks.python import vision as mp_vision
+def _ffmpeg_available() -> bool:
+    return bool(shutil.which("ffmpeg") and shutil.which("ffprobe"))
 
-    if not Path(model_path).exists():
-        raise FileNotFoundError(
-            f"Pose model not found at {model_path}. Download pose_landmarker.task "
-            "(see backend/app/services/pose/models/README.md)."
-        )
 
-    _t = time.perf_counter
-    _open0 = _t()
-
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        raise RuntimeError(f"Could not open video: {video_path}")
-
-    # Apply the container's rotation metadata (phones record portrait clips as
-    # landscape + a 90/180° flag). Without this, portrait uploads are analyzed
-    # sideways and every vertical-referenced metric (torso lean, hip sag, bar
-    # path) is wrong. Frame dimensions are read from the first decoded frame
-    # below, after rotation is applied.
-    cap.set(cv2.CAP_PROP_ORIENTATION_AUTO, 1.0)
-
-    src_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-    if not (src_fps > 0):
-        src_fps = 30.0
-    width = 0
-    height = 0
-
-    # Take every ``step``-th source frame to approximate ``target_fps``.
-    step = max(1, round(src_fps / target_fps)) if target_fps > 0 else 1
-    effective_fps = src_fps / step
-    _video_open_s = _t() - _open0
-
-    # Pin the CPU delegate: this is a headless server with no GPU/display, so we
-    # never want MediaPipe to attempt to create an OpenGL/EGL context at runtime.
-    # (The native binding still has a load-time dependency on libGLESv2/libEGL —
-    # those are provided by the system packages installed in the Dockerfile.)
-    options = mp_vision.PoseLandmarkerOptions(
-        base_options=mp_python.BaseOptions(
-            model_asset_path=model_path,
-            delegate=mp_python.BaseOptions.Delegate.CPU,
-        ),
-        running_mode=mp_vision.RunningMode.VIDEO,
-        num_poses=1,
-        min_pose_detection_confidence=0.5,
-        min_pose_presence_confidence=0.5,
-        min_tracking_confidence=0.5,
-    )
-
-    _init0 = _t()
-    landmarker = mp_vision.PoseLandmarker.create_from_options(options)
-    _init_s = _t() - _init0
-
-    # Confirm the tracking-enabled path is active. VIDEO running mode carries pose
-    # tracking between frames (min_tracking_confidence), so most frames are a cheap
-    # track rather than a full re-detection — IMAGE mode would re-detect every frame
-    # and be far slower. This line makes it obvious in the Render logs.
-    logger.info(
-        "pose config: running_mode=VIDEO (tracking on) delegate=CPU num_poses=1 "
-        "detect_conf=%.2f track_conf=%.2f model=%s",
-        0.5, 0.5, Path(model_path).name,
-    )
-
-    if cold_start:
-        logger.info(
-            "pose model loaded from scratch (COLD start — first analysis in this "
-            "process: lazy-imported MediaPipe/OpenCV + built landmarker graph); "
-            "graph build %.0fms",
-            _init_s * 1000,
-        )
-    else:
-        logger.info(
-            "pose model: CV modules reused from memory (process warm); landmarker "
-            "graph rebuilt fresh for this analysis in %.0fms",
-            _init_s * 1000,
-        )
-
-    frames: list[np.ndarray] = []
-    decode_s = 0.0    # cumulative grab() — this DECODES each source frame
-    extract_s = 0.0   # cumulative retrieve + downscale + colour-convert (kept frames only)
-    infer_s = 0.0     # cumulative MediaPipe inference (kept frames only)
-    out_w = 0         # analysed (downscaled) frame dims, for logging
-    out_h = 0
+def _parse_rate(rate: str | None) -> float:
+    if not rate:
+        return 0.0
     try:
-        src_idx = 0    # index into the source stream
-        grabbed = 0    # source frames decoded (grab): the hidden cost — every frame
-        kept = 0       # number of frames actually processed (inference)
-        while kept < max_frames:
-            # NOTE: for the FFmpeg backend, ``grab`` fully DECODES the frame (it is
-            # NOT free); ``retrieve`` only colour-converts/copies the last grabbed
-            # frame. So we still pay decode on every source frame even though we only
-            # run inference on every ``step``-th one — hence timing this separately.
-            _g0 = _t()
-            ok_grab = cap.grab()
-            decode_s += _t() - _g0
-            if not ok_grab:
-                break
-            grabbed += 1
-            if src_idx % step == 0:
-                _e0 = _t()
-                ok, frame_bgr = cap.retrieve()
-                if not ok:
-                    break
-                # Record true (post-rotation) dimensions from the first real frame.
-                if not width:
-                    height, width = frame_bgr.shape[:2]
-                # Downscale so the longest side is <= max_dim (INTER_AREA for downscale).
-                h, w = frame_bgr.shape[:2]
-                longest = max(h, w)
-                if max_dim and longest > max_dim:
-                    scale = max_dim / longest
-                    frame_bgr = cv2.resize(
-                        frame_bgr, (round(w * scale), round(h * scale)), interpolation=cv2.INTER_AREA
-                    )
-                if not out_w:
-                    out_h, out_w = frame_bgr.shape[:2]
-                frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-                mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
-                timestamp_ms = int(kept * 1000.0 / effective_fps)
-                extract_s += _t() - _e0
+        if "/" in rate:
+            n, d = rate.split("/")
+            return float(n) / float(d) if float(d) else 0.0
+        return float(rate)
+    except (ValueError, ZeroDivisionError):
+        return 0.0
 
-                _i0 = _t()
-                result = landmarker.detect_for_video(mp_image, timestamp_ms)
-                infer_s += _t() - _i0
 
-                frames.append(_extract(result))
-                kept += 1
-            src_idx += 1
-    finally:
-        landmarker.close()
-        cap.release()
-
-    if timings is not None:
-        timings["video_loaded"] = _video_open_s
-        timings["pose_model_init"] = _init_s
-        timings["frame_decode"] = decode_s
-        timings["frame_extraction"] = extract_s
-        timings["pose_estimation"] = infer_s
-
-    # Source vs processed sampling + resolution — the levers behind analysis time.
-    logger.info(
-        "pose sampling: source=%.1ffps → processed=%.1ffps (every %d frame(s), target %.1f); "
-        "decoded %d source frames, ran inference on %d; input %dx%d → analysed %dx%d (max_dim=%d)",
-        src_fps, effective_fps, step, target_fps,
-        grabbed, kept, width, height, out_w, out_h, max_dim,
+def _probe(video_path: str) -> tuple[int, int, float]:
+    """Return ``(display_width, display_height, source_fps)`` via ffprobe, applying
+    rotation metadata so portrait clips report upright dimensions — matching what
+    ffmpeg's autorotation emits, so our computed scale dims line up with the pipe."""
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_streams",
+         "-of", "json", video_path],
+        capture_output=True, text=True, timeout=60,
     )
-    # Per-frame costs make the dominant stage obvious at a glance in the Render logs.
-    dec_ms = (decode_s / grabbed * 1000.0) if grabbed else 0.0
-    inf_ms = (infer_s / kept * 1000.0) if kept else 0.0
-    logger.info(
-        "pose timing: decode %.1fs (%d frames @ %.0fms, incl. %d skipped) | "
-        "extract %.1fs | inference %.1fs (%d frames @ %.0fms)",
-        decode_s, grabbed, dec_ms, grabbed - kept,
-        extract_s, infer_s, kept, inf_ms,
-    )
+    streams = (json.loads(out.stdout or "{}").get("streams") or [])
+    if not streams:
+        raise RuntimeError("ffprobe found no video stream")
+    st = streams[0]
+    w, h = int(st["width"]), int(st["height"])
+    rot = 0
+    for sd in st.get("side_data_list", []):
+        if "rotation" in sd:
+            rot = int(round(float(sd["rotation"])))
+            break
+    if rot == 0:
+        tag = (st.get("tags") or {}).get("rotate")
+        if tag is not None:
+            rot = int(round(float(tag)))
+    if abs(rot) % 180 == 90:  # 90/270 => portrait/landscape swap
+        w, h = h, w
+    fps = _parse_rate(st.get("avg_frame_rate")) or _parse_rate(st.get("r_frame_rate"))
+    return w, h, fps
 
-    # The engine is now warm for the rest of this process's life.
-    _POSE_WARM = True
 
-    arr = (
-        np.stack(frames)
-        if frames
-        else np.full((0, NUM_LANDMARKS, 4), np.nan, dtype=np.float32)
-    )
-    duration = len(frames) / effective_fps if effective_fps else 0.0
-    return PoseResult(
-        landmarks=arr, fps=effective_fps, duration=duration,
-        width=width, height=height, source_fps=src_fps,
-    )
+def _scaled_dims(dw: int, dh: int, max_dim: int) -> tuple[int, int]:
+    """Downscale so the longest side is <= ``max_dim`` (preserving aspect), with
+    even dimensions (rawvideo / most codecs require even width & height)."""
+    longest = max(dw, dh)
+    if max_dim and longest > max_dim:
+        sf = max_dim / longest
+        sw, sh = int(round(dw * sf)), int(round(dh * sf))
+    else:
+        sw, sh = dw, dh
+    sw -= sw % 2
+    sh -= sh % 2
+    return max(2, sw), max(2, sh)
+
+
+def _read_exact(stream, n: int) -> bytes:
+    """Read exactly ``n`` bytes from a pipe (a single ``read`` can return short)."""
+    buf = bytearray()
+    while len(buf) < n:
+        chunk = stream.read(n - len(buf))
+        if not chunk:
+            break
+        buf += chunk
+    return bytes(buf)
 
 
 def _extract(result) -> np.ndarray:
@@ -252,6 +150,265 @@ def _extract(result) -> np.ndarray:
                 break
             out[i] = (lm.x, lm.y, lm.z, lm.visibility)
     return out
+
+
+def _decode_ffmpeg(video_path, landmarker, *, target_fps, max_dim, max_frames) -> _Decoded:
+    """Stream decoded+downscaled+decimated RGB frames from a single ffmpeg process
+    straight into MediaPipe, one frame at a time (never holding the whole clip)."""
+    import mediapipe as mp
+    _t = time.perf_counter
+
+    dw, dh, src_fps = _probe(video_path)
+    out_w, out_h = _scaled_dims(dw, dh, max_dim)
+    eff = float(target_fps) if target_fps and target_fps > 0 else (src_fps or 30.0)
+
+    # ffmpeg autorotates by default; ``fps`` decimates and ``scale`` downsizes, both
+    # in C, and we only receive the kept frames as raw RGB. This is where "reduced
+    # FPS reduces the frames we decode/handle" actually happens: ffmpeg emits ~eff
+    # fps, so our loop touches only those frames (grabbed == kept), instead of the
+    # OpenCV path that must step through every source frame.
+    cmd = [
+        "ffmpeg", "-nostdin", "-loglevel", "error", "-i", video_path,
+        "-an", "-sn",
+        "-vf", f"fps={eff:g},scale={out_w}:{out_h}",
+        "-map", "0:v:0", "-pix_fmt", "rgb24", "-f", "rawvideo", "-",
+    ]
+    d = _Decoded(width=dw, height=dh, out_w=out_w, out_h=out_h,
+                 src_fps=src_fps, effective_fps=eff)
+    frame_bytes = out_w * out_h * 3
+    proc = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=frame_bytes,
+    )
+    try:
+        while d.kept < max_frames:
+            _g0 = _t()
+            buf = _read_exact(proc.stdout, frame_bytes)
+            d.decode_s += _t() - _g0
+            if len(buf) < frame_bytes:
+                break
+            d.grabbed += 1
+            _e0 = _t()
+            rgb = np.frombuffer(buf, dtype=np.uint8).reshape(out_h, out_w, 3)
+            image = mp.Image(image_format=mp.ImageFormat.SRGB, data=np.ascontiguousarray(rgb))
+            ts_ms = int(d.kept * 1000.0 / eff)
+            d.extract_s += _t() - _e0
+            _i0 = _t()
+            result = landmarker.detect_for_video(image, ts_ms)
+            d.infer_s += _t() - _i0
+            d.frames.append(_extract(result))
+            d.kept += 1
+    finally:
+        try:
+            if proc.stdout:
+                proc.stdout.close()
+        except OSError:
+            pass
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+    if d.kept == 0:
+        raise RuntimeError("ffmpeg produced no frames")
+    return d
+
+
+def _decode_cv2(video_path, landmarker, *, target_fps, max_dim, max_frames) -> _Decoded:
+    """OpenCV fallback: decode every source frame (``grab``), run inference on every
+    ``step``-th one. Functionally identical output; kept for hosts without ffmpeg."""
+    import cv2
+    import mediapipe as mp
+    _t = time.perf_counter
+
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise RuntimeError(f"Could not open video: {video_path}")
+    # Apply the container's rotation metadata (phones record portrait as landscape
+    # + a 90/180° flag) so vertical-referenced metrics aren't analyzed sideways.
+    cap.set(cv2.CAP_PROP_ORIENTATION_AUTO, 1.0)
+
+    src_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    if not (src_fps > 0):
+        src_fps = 30.0
+    step = max(1, round(src_fps / target_fps)) if target_fps > 0 else 1
+    eff = src_fps / step
+    d = _Decoded(src_fps=src_fps, effective_fps=eff)
+    try:
+        src_idx = 0
+        while d.kept < max_frames:
+            # NOTE: for the FFmpeg backend ``grab`` fully DECODES each frame; only
+            # ``retrieve`` (below) colour-converts the kept ones. So we pay decode on
+            # every source frame — the reason the ffmpeg path above is preferred.
+            _g0 = _t()
+            ok_grab = cap.grab()
+            d.decode_s += _t() - _g0
+            if not ok_grab:
+                break
+            d.grabbed += 1
+            if src_idx % step == 0:
+                _e0 = _t()
+                ok, frame_bgr = cap.retrieve()
+                if not ok:
+                    break
+                if not d.width:
+                    d.height, d.width = frame_bgr.shape[:2]
+                h, w = frame_bgr.shape[:2]
+                longest = max(h, w)
+                if max_dim and longest > max_dim:
+                    sf = max_dim / longest
+                    frame_bgr = cv2.resize(
+                        frame_bgr, (round(w * sf), round(h * sf)), interpolation=cv2.INTER_AREA
+                    )
+                if not d.out_w:
+                    d.out_h, d.out_w = frame_bgr.shape[:2]
+                frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+                image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
+                ts_ms = int(d.kept * 1000.0 / eff)
+                d.extract_s += _t() - _e0
+                _i0 = _t()
+                result = landmarker.detect_for_video(image, ts_ms)
+                d.infer_s += _t() - _i0
+                d.frames.append(_extract(result))
+                d.kept += 1
+            src_idx += 1
+    finally:
+        cap.release()
+    return d
+
+
+def run_pose(
+    video_path: str,
+    model_path: str,
+    *,
+    target_fps: float = 8.0,
+    max_dim: int = 720,
+    max_frames: int = 600,
+    decoder: str = "auto",
+    timings: dict[str, float] | None = None,
+) -> PoseResult:
+    """Estimate pose over a clip, temporally downsampled and spatially downscaled.
+
+    Runtime is driven by frame decoding (dominant) and one CPU inference per kept
+    frame. We downsample to ``target_fps`` and cap at ``max_frames``; the returned
+    ``fps`` is the *effective* sampled fps so every downstream frame index/timestamp
+    (rep windows, joint-angle series, overlay) maps back to real time as ``frame/fps``.
+    ``decoder``: "auto"/"ffmpeg" prefer the ffmpeg pipe (fall back to OpenCV), "cv2"
+    forces OpenCV.
+    """
+    global _POSE_WARM
+    cold_start = not _POSE_WARM
+
+    import mediapipe as mp  # noqa: F401 (imported so cold-start import cost is counted)
+    from mediapipe.tasks import python as mp_python
+    from mediapipe.tasks.python import vision as mp_vision
+
+    if not Path(model_path).exists():
+        raise FileNotFoundError(
+            f"Pose model not found at {model_path}. Download the model bundle "
+            "(see backend/app/services/pose/models/README.md)."
+        )
+
+    _t = time.perf_counter
+
+    def make_landmarker():
+        # Pin the CPU delegate (headless, no GPU/display). VIDEO running mode carries
+        # tracking between frames so most frames are a cheap track, not a full detect.
+        options = mp_vision.PoseLandmarkerOptions(
+            base_options=mp_python.BaseOptions(
+                model_asset_path=model_path,
+                delegate=mp_python.BaseOptions.Delegate.CPU,
+            ),
+            running_mode=mp_vision.RunningMode.VIDEO,
+            num_poses=1,
+            min_pose_detection_confidence=0.5,
+            min_pose_presence_confidence=0.5,
+            min_tracking_confidence=0.5,
+        )
+        return mp_vision.PoseLandmarker.create_from_options(options)
+
+    _init0 = _t()
+    landmarker = make_landmarker()
+    _init_s = _t() - _init0
+
+    logger.info(
+        "pose config: running_mode=VIDEO (tracking on) delegate=CPU num_poses=1 "
+        "detect_conf=0.50 track_conf=0.50 model=%s",
+        Path(model_path).name,
+    )
+    if cold_start:
+        logger.info(
+            "pose model loaded from scratch (COLD start — first analysis in this "
+            "process: lazy-imported MediaPipe/OpenCV + built landmarker graph); "
+            "graph build %.0fms", _init_s * 1000,
+        )
+    else:
+        logger.info(
+            "pose model: CV modules reused from memory (process warm); landmarker "
+            "graph rebuilt fresh for this analysis in %.0fms", _init_s * 1000,
+        )
+
+    prefer_ffmpeg = decoder in ("auto", "ffmpeg")
+    used = "opencv"
+    try:
+        if prefer_ffmpeg and _ffmpeg_available():
+            try:
+                d = _decode_ffmpeg(
+                    video_path, landmarker,
+                    target_fps=target_fps, max_dim=max_dim, max_frames=max_frames,
+                )
+                used = "ffmpeg"
+            except Exception as exc:  # noqa: BLE001 — any ffmpeg failure => safe fallback
+                logger.warning(
+                    "ffmpeg decode failed (%s); rebuilding landmarker and falling "
+                    "back to the OpenCV decoder", exc,
+                )
+                landmarker.close()
+                landmarker = make_landmarker()  # fresh timestamps for VIDEO mode
+                d = _decode_cv2(
+                    video_path, landmarker,
+                    target_fps=target_fps, max_dim=max_dim, max_frames=max_frames,
+                )
+        else:
+            if prefer_ffmpeg:
+                logger.info("ffmpeg/ffprobe not on PATH; using OpenCV decoder")
+            d = _decode_cv2(
+                video_path, landmarker,
+                target_fps=target_fps, max_dim=max_dim, max_frames=max_frames,
+            )
+    finally:
+        landmarker.close()
+
+    if timings is not None:
+        timings["pose_model_init"] = _init_s
+        timings["frame_decode"] = d.decode_s
+        timings["frame_extraction"] = d.extract_s
+        timings["pose_estimation"] = d.infer_s
+
+    logger.info(
+        "pose decoder=%s | source=%.1ffps → processed=%.1ffps; handled %d source "
+        "frames, inference on %d; input %dx%d → analysed %dx%d (max_dim=%d, target_fps=%.1f)",
+        used, d.src_fps, d.effective_fps, d.grabbed, d.kept,
+        d.width, d.height, d.out_w, d.out_h, max_dim, target_fps,
+    )
+    dec_ms = (d.decode_s / d.grabbed * 1000.0) if d.grabbed else 0.0
+    inf_ms = (d.infer_s / d.kept * 1000.0) if d.kept else 0.0
+    logger.info(
+        "pose timing: frame_decode %.1fs (%d frames @ %.0fms) | frame_extraction "
+        "%.1fs | pose_estimation %.1fs (%d frames @ %.0fms)",
+        d.decode_s, d.grabbed, dec_ms, d.extract_s, d.infer_s, d.kept, inf_ms,
+    )
+
+    _POSE_WARM = True
+    arr = (
+        np.stack(d.frames)
+        if d.frames
+        else np.full((0, NUM_LANDMARKS, 4), np.nan, dtype=np.float32)
+    )
+    duration = len(d.frames) / d.effective_fps if d.effective_fps else 0.0
+    return PoseResult(
+        landmarks=arr, fps=d.effective_fps, duration=duration,
+        width=d.width, height=d.height, source_fps=d.src_fps,
+    )
 
 
 def save_landmarks(path: str, result: PoseResult) -> None:

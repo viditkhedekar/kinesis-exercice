@@ -191,6 +191,7 @@ def run_pipeline(session_id: int, timer: StageTimer | None = None) -> None:
             target_fps=settings.pose_target_fps,
             max_dim=settings.pose_max_dim,
             max_frames=settings.pose_max_frames,
+            decoder=settings.pose_decoder,
             timings=pose_timings,
         )
         if timer is not None:

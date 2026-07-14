@@ -53,15 +53,19 @@ class Settings(BaseSettings):
     # temporally downsample to a target fps, downscale each frame, and cap the total
     # number of processed frames. These are plenty of temporal/spatial resolution
     # for rep detection and joint-angle measurement.
-    # ~10 fps (a 30fps clip is sampled every 3rd frame) keeps enough temporal
-    # resolution for rep counting and technique while cutting frames ~a third vs 15.
-    pose_target_fps: float = 10.0     # sample the source down to ~this fps
-    # Longest side is capped to this before inference. 640 is already well under
-    # 720p and MediaPipe internally rescales to ~256px, so this is lossless for the
-    # analysis while making decode/preprocess cheaper. The original upload is never
-    # modified — this only downscales frames in memory for pose.
-    pose_max_dim: int = 640           # downscale so the longest side is <= this (<=720p)
+    # ~8 fps keeps enough temporal resolution for rep counting and technique while
+    # minimising decoded/processed frames.
+    pose_target_fps: float = 8.0      # sample the source down to ~this fps
+    # Longest side is capped to this before inference (<= 720p). MediaPipe internally
+    # rescales to ~256px, so this is lossless for the analysis. The original upload is
+    # never modified — only in-memory/ffmpeg-piped frames are downscaled.
+    pose_max_dim: int = 720           # downscale so the longest side is <= this
     pose_max_frames: int = 600        # hard cap on processed frames (bounds runtime)
+    # Video decoder: "ffmpeg" (default; single C subprocess does decode+scale+fps
+    # decimation and streams frames into MediaPipe — far faster than decoding every
+    # frame in Python) with automatic fallback to OpenCV when ffmpeg isn't on PATH.
+    # Set "cv2" to force the OpenCV decoder.
+    pose_decoder: str = "ffmpeg"
 
     # --- Auth ---
     auth_secret: str = "dev-insecure-change-me"   # HMAC signing key for session tokens

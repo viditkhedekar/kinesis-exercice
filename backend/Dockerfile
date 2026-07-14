@@ -8,8 +8,10 @@ FROM python:3.11-slim-bookworm
 #                                          even when inference runs on the CPU)
 # These are the GLVND dispatch libraries: they satisfy the sonames on headless,
 # GPU-less hosts without requiring a real GPU or display server.
+# ffmpeg/ffprobe drive the fast video-decode path (decode + downscale + fps
+# decimation in C, streamed into MediaPipe); the libGL/EGL libs satisfy the CV stack.
 RUN apt-get update && apt-get install -y --no-install-recommends --allow-unauthenticated \
-    libgl1 libglib2.0-0 libgles2 libegl1 curl ca-certificates \
+    libgl1 libglib2.0-0 libgles2 libegl1 ffmpeg curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
