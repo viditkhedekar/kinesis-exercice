@@ -19,7 +19,13 @@ from app.api import (
 from app.config import get_settings
 from app.db import SessionLocal
 from app.exercises import available_exercises
+from app.logging_config import configure_logging
 from app.models import Exercise
+
+# Configure logging at import time so the ``kinesis.*`` INFO logs (notably the
+# per-analysis timing breakdown) reach stdout under uvicorn/Render, which
+# otherwise only sets up its own loggers and drops ours at the root's WARNING.
+configure_logging()
 
 
 def seed_exercises() -> None:
@@ -37,6 +43,7 @@ def seed_exercises() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    configure_logging()  # idempotent; also covers non-uvicorn entrypoints
     seed_exercises()
     yield
 

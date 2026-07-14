@@ -17,7 +17,6 @@ dependencies = [
     "PyYAML>=6.0",
     "mediapipe>=0.10.14",
     "opencv-python-headless>=4.9",
-    "anthropic>=0.40",
 ]
 
 [project.optional-dependencies]

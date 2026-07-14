@@ -8,7 +8,7 @@ import {
 } from "react";
 import { signalFor } from "@/lib/live/exerciseSignals";
 import { POSE_EDGES } from "@/lib/live/landmarks";
-import { closePoseLandmarker, detectFrame, getPoseLandmarker } from "@/lib/live/mediapipe";
+import { detectFrame, getPoseLandmarker } from "@/lib/live/mediapipe";
 import { RepEngine } from "@/lib/live/repEngine";
 import { computeRepMetrics, type RepMetrics } from "@/lib/live/repMetrics";
 import { renderLiveFrame } from "@/lib/poseOverlay";
@@ -203,7 +203,11 @@ const LiveCamera = forwardRef<LiveCameraHandle, Props>(function LiveCamera(
       cancelled = true;
       cancelAnimationFrame(raf);
       stream?.getTracks().forEach((t) => t.stop());
-      closePoseLandmarker();
+      // Intentionally do NOT close the PoseLandmarker here. It's a module-level
+      // singleton (see getPoseLandmarker); keeping it alive across mounts means
+      // the wasm runtime + .task model + GPU upload are paid once per page load
+      // instead of every time the live camera opens or the exercise changes.
+      // It's released automatically when the page/tab is torn down.
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [exerciseKey]);

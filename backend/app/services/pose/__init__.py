@@ -9,6 +9,7 @@ MediaPipe and OpenCV are imported lazily so the pure-Python analysis modules
 """
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,6 +17,8 @@ from pathlib import Path
 import numpy as np
 
 from app.services.pose.landmarks import NUM_LANDMARKS, POSE_EDGES  # noqa: F401 (re-export)
+
+logger = logging.getLogger("kinesis.pose")
 
 
 @dataclass
@@ -57,6 +60,15 @@ def run_pose(
     frames before inference is lossless for the analysis while cutting per-frame
     pre-processing cost.
     """
+    # First analysis in this process pays the cold cost: lazily importing the CV
+    # stack (below) + constructing the landmarker graph. On later analyses those
+    # modules are reused from ``sys.modules`` (in memory), though the landmarker
+    # graph itself is still rebuilt per analysis (a fresh instance keeps the
+    # per-request thread safe). We log which case this is so the Render logs show
+    # whether a slow analysis paid the cold-start penalty.
+    global _POSE_WARM
+    cold_start = not _POSE_WARM
+
     import cv2  # lazy
     import mediapipe as mp
     from mediapipe.tasks import python as mp_python
@@ -113,6 +125,20 @@ def run_pose(
     landmarker = mp_vision.PoseLandmarker.create_from_options(options)
     _init_s = _t() - _init0
 
+    if cold_start:
+        logger.info(
+            "pose model loaded from scratch (COLD start — first analysis in this "
+            "process: lazy-imported MediaPipe/OpenCV + built landmarker graph); "
+            "graph build %.0fms",
+            _init_s * 1000,
+        )
+    else:
+        logger.info(
+            "pose model: CV modules reused from memory (process warm); landmarker "
+            "graph rebuilt fresh for this analysis in %.0fms",
+            _init_s * 1000,
+        )
+
     frames: list[np.ndarray] = []
     extract_s = 0.0   # cumulative decode + downscale + colour-convert
     infer_s = 0.0     # cumulative MediaPipe inference
@@ -163,7 +189,6 @@ def run_pose(
         timings["pose_estimation"] = infer_s
 
     # The engine is now warm for the rest of this process's life.
-    global _POSE_WARM
     _POSE_WARM = True
 
     arr = (

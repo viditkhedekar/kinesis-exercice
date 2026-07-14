@@ -5,10 +5,8 @@ export default function CoachPanel({ report }: { report: Report }) {
   return (
     <div className="card p-5">
       <div className="flex items-center justify-between mb-3">
-        <h3 className="font-semibold">AI Coach</h3>
-        <span className="label">
-          {report.coaching_provider === "claude" ? "Claude" : "rule-based"} · explains the analysis
-        </span>
+        <h3 className="font-semibold">Coach</h3>
+        <span className="label">rule-based · explains the analysis</span>
       </div>
       <div className="space-y-3 text-sm leading-relaxed text-fg whitespace-pre-line">
         {report.coaching}

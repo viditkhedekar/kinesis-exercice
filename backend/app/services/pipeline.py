@@ -40,7 +40,7 @@ from app.services.feedback import (
     strengths,
 )
 from app.services.insights import generate_insights
-from app.services.pose import PoseResult, run_pose, save_landmarks
+from app.services.pose import PoseResult, is_pose_warm, run_pose, save_landmarks
 from app.services.progress import upsert_progress
 from app.services.reps import RepWindow, detect_reps
 from app.services.rules import evaluate_session
@@ -182,6 +182,9 @@ def run_pipeline(session_id: int, timer: StageTimer | None = None) -> None:
         #    sub-stage timings (video load, model init, frame extraction, inference)
         #    are filled into ``pose_timings`` and merged into the report.
         pose_timings: dict[str, float] = {}
+        # Captured before run_pose (which flips the warm flag) so the summary shows
+        # whether this analysis paid the cold model/import cost or reused a warm engine.
+        pose_engine_cold = not is_pose_warm()
         pose = run_pose(
             session.video.path,
             str(settings.pose_model_path),
@@ -194,6 +197,7 @@ def run_pipeline(session_id: int, timer: StageTimer | None = None) -> None:
             timer.merge(pose_timings)
             timer.note("frames", len(pose.landmarks))
             timer.note("effective_fps", round(pose.fps, 1))
+            timer.note("pose_engine", "cold (loaded from scratch)" if pose_engine_cold else "warm (reused)")
 
         session.video.fps = pose.fps
         session.video.duration = pose.duration

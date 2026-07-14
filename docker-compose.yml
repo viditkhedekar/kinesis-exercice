@@ -23,8 +23,6 @@ services:
     environment:
       KINESIS_DATABASE_URL: postgresql+psycopg2://kinesis:kinesis@postgres:5432/kinesis
       KINESIS_STORAGE_DIR: /data/kinesis
-      KINESIS_COACH_PROVIDER: ${KINESIS_COACH_PROVIDER:-echo}
-      KINESIS_ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       # Email verification. Locally defaults to "console" (link is logged, not sent).
       # For production set EMAIL_PROVIDER=resend + RESEND_API_KEY (or sendgrid / smtp).
       KINESIS_REQUIRE_EMAIL_VERIFICATION: ${KINESIS_REQUIRE_EMAIL_VERIFICATION:-true}

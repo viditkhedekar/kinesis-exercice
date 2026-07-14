@@ -1,26 +1,14 @@
-"""AI coaching: explain the deterministic analysis — never re-derive it.
+"""Coaching: explain the deterministic analysis — never re-derive it.
 
 The coach receives only the structured ``AnalysisReport``. ``EchoCoach`` is a
-deterministic template coach (no LLM, always available). ``ClaudeCoach`` sends
-the report to Anthropic's API with a system prompt that forbids independent
-movement analysis. The provider is chosen by ``settings.coach_provider``.
+deterministic template coach: it runs entirely offline with no LLM or external
+service call, so the app never sends analysis data anywhere for coaching.
 """
 from __future__ import annotations
 
 from typing import Protocol
 
-from app.config import get_settings
 from app.schemas import AnalysisReport
-
-SYSTEM_PROMPT = (
-    "You are a strength & conditioning coach explaining an automated biomechanics "
-    "report to an athlete. The report was produced by deterministic rules from "
-    "video pose analysis. Your job is ONLY to explain and prioritize the findings "
-    "that are given to you and suggest concrete drills or cues to fix them. "
-    "Do NOT invent faults, scores, or measurements that are not in the data, and do "
-    "NOT claim to have watched the video. Be specific, encouraging, and concise. "
-    "Lead with the single most important thing to work on."
-)
 
 
 class CoachingProvider(Protocol):
@@ -71,40 +59,7 @@ class EchoCoach:
         return "\n\n".join(lines)
 
 
-class ClaudeCoach:
-    name = "claude"
-
-    def __init__(self) -> None:
-        settings = get_settings()
-        self._model = settings.coach_model
-        self._api_key = settings.anthropic_api_key
-
-    def explain(self, report: AnalysisReport) -> str:
-        import anthropic  # lazy
-
-        client = anthropic.Anthropic(api_key=self._api_key)
-        user_payload = report.model_dump_json(indent=2)
-        response = client.messages.create(
-            model=self._model,
-            max_tokens=1500,
-            thinking={"type": "adaptive"},
-            system=SYSTEM_PROMPT,
-            messages=[
-                {
-                    "role": "user",
-                    "content": (
-                        "Here is the structured biomechanics report (JSON). Explain the "
-                        "findings and give the athlete a prioritized action plan with drills:\n\n"
-                        f"{user_payload}"
-                    ),
-                }
-            ],
-        )
-        return "".join(b.text for b in response.content if b.type == "text").strip()
-
-
 def get_coach() -> CoachingProvider:
-    provider = get_settings().coach_provider.lower()
-    if provider == "claude":
-        return ClaudeCoach()
+    # Coaching is always the deterministic, offline EchoCoach. The app never
+    # calls an LLM or external service to explain analyses.
     return EchoCoach()

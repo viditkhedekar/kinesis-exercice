@@ -39,12 +39,6 @@ class Settings(BaseSettings):
     pose_max_dim: int = 640           # downscale so the longest side is <= this
     pose_max_frames: int = 600        # hard cap on processed frames (bounds runtime)
 
-    # --- AI coaching ---
-    # "echo" = deterministic template coach (no LLM). "claude" = Anthropic LLM.
-    coach_provider: str = "echo"
-    anthropic_api_key: str | None = None
-    coach_model: str = "claude-opus-4-8"
-
     # --- Auth ---
     auth_secret: str = "dev-insecure-change-me"   # HMAC signing key for session tokens
     auth_cookie: str = "kinesis_session"
