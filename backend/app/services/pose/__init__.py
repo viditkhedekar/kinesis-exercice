@@ -126,6 +126,16 @@ def run_pose(
     landmarker = mp_vision.PoseLandmarker.create_from_options(options)
     _init_s = _t() - _init0
 
+    # Confirm the tracking-enabled path is active. VIDEO running mode carries pose
+    # tracking between frames (min_tracking_confidence), so most frames are a cheap
+    # track rather than a full re-detection — IMAGE mode would re-detect every frame
+    # and be far slower. This line makes it obvious in the Render logs.
+    logger.info(
+        "pose config: running_mode=VIDEO (tracking on) delegate=CPU num_poses=1 "
+        "detect_conf=%.2f track_conf=%.2f model=%s",
+        0.5, 0.5, Path(model_path).name,
+    )
+
     if cold_start:
         logger.info(
             "pose model loaded from scratch (COLD start — first analysis in this "
@@ -141,18 +151,26 @@ def run_pose(
         )
 
     frames: list[np.ndarray] = []
-    extract_s = 0.0   # cumulative decode + downscale + colour-convert
-    infer_s = 0.0     # cumulative MediaPipe inference
+    decode_s = 0.0    # cumulative grab() — this DECODES each source frame
+    extract_s = 0.0   # cumulative retrieve + downscale + colour-convert (kept frames only)
+    infer_s = 0.0     # cumulative MediaPipe inference (kept frames only)
     out_w = 0         # analysed (downscaled) frame dims, for logging
     out_h = 0
     try:
-        src_idx = 0   # index into the source stream
-        kept = 0      # number of frames actually processed
+        src_idx = 0    # index into the source stream
+        grabbed = 0    # source frames decoded (grab): the hidden cost — every frame
+        kept = 0       # number of frames actually processed (inference)
         while kept < max_frames:
-            # ``grab`` advances without fully decoding pixels; only ``retrieve`` the
-            # frames we actually keep, so skipped frames are cheap.
-            if not cap.grab():
+            # NOTE: for the FFmpeg backend, ``grab`` fully DECODES the frame (it is
+            # NOT free); ``retrieve`` only colour-converts/copies the last grabbed
+            # frame. So we still pay decode on every source frame even though we only
+            # run inference on every ``step``-th one — hence timing this separately.
+            _g0 = _t()
+            ok_grab = cap.grab()
+            decode_s += _t() - _g0
+            if not ok_grab:
                 break
+            grabbed += 1
             if src_idx % step == 0:
                 _e0 = _t()
                 ok, frame_bgr = cap.retrieve()
@@ -190,15 +208,25 @@ def run_pose(
     if timings is not None:
         timings["video_loaded"] = _video_open_s
         timings["pose_model_init"] = _init_s
+        timings["frame_decode"] = decode_s
         timings["frame_extraction"] = extract_s
         timings["pose_estimation"] = infer_s
 
     # Source vs processed sampling + resolution — the levers behind analysis time.
     logger.info(
-        "pose sampling: source=%.1ffps → processed=%.1ffps (every %d frame(s), target %.1f), "
-        "%d frames analysed; input %dx%d → analysed %dx%d (max_dim=%d)",
+        "pose sampling: source=%.1ffps → processed=%.1ffps (every %d frame(s), target %.1f); "
+        "decoded %d source frames, ran inference on %d; input %dx%d → analysed %dx%d (max_dim=%d)",
         src_fps, effective_fps, step, target_fps,
-        kept, width, height, out_w, out_h, max_dim,
+        grabbed, kept, width, height, out_w, out_h, max_dim,
+    )
+    # Per-frame costs make the dominant stage obvious at a glance in the Render logs.
+    dec_ms = (decode_s / grabbed * 1000.0) if grabbed else 0.0
+    inf_ms = (infer_s / kept * 1000.0) if kept else 0.0
+    logger.info(
+        "pose timing: decode %.1fs (%d frames @ %.0fms, incl. %d skipped) | "
+        "extract %.1fs | inference %.1fs (%d frames @ %.0fms)",
+        decode_s, grabbed, dec_ms, grabbed - kept,
+        extract_s, infer_s, kept, inf_ms,
     )
 
     # The engine is now warm for the rest of this process's life.

@@ -116,13 +116,21 @@ def _sev(f) -> str:
 
 
 def overall_score(groups: list[GroupedFault], n_reps: int) -> float:
-    """100 minus severity-and-prevalence-weighted penalties. A repeated fault is
-    charged once (prevalence scales 0.5x for one rep up to 1.0x for all reps)."""
+    """100 minus severity-, prevalence- and confidence-weighted penalties.
+
+    A repeated fault is charged once (prevalence scales 0.5x for one rep up to
+    1.0x for all reps). Crucially the penalty is also scaled by the fault's
+    *confidence*: a fault the system can only observe poorly — e.g. a frontal-plane
+    issue (knee cave, weight shift, L/R asymmetry) measured from a side-on view
+    where the far side is occluded — is uncertain, so it should not sink the score
+    the way a clearly-observed fault does. Without this weighting the recommended
+    side-on view for squats/deadlifts stacks several low-confidence frontal faults
+    and pushes otherwise-solid sets down into the 30s."""
     score = 100.0
     n = max(1, n_reps)
     for g in groups:
         prevalence = 0.5 + 0.5 * (len(g.affected_reps) / n)
-        score -= SEV_PENALTY.get(g.severity, 10.0) * prevalence
+        score -= SEV_PENALTY.get(g.severity, 10.0) * prevalence * g.confidence
     return max(0.0, round(score, 1))
 
 
@@ -150,14 +158,25 @@ def _rom(metrics: dict[str, np.ndarray], signal: str, reps) -> float:
 
 
 def _symmetry(metrics: dict[str, np.ndarray], signal: str, reps) -> float | None:
+    """Left/right symmetry as the mean per-rep difference in *range of motion*
+    (degrees each side travels), not a pointwise ``|left - right|``.
+
+    Pointwise difference is dominated by camera perspective (in a side view the far
+    limb sits at a different apparent angle) and by any timing lag between the two
+    sides, so a perfectly symmetric athlete can read as "poor". How far each side
+    *moves* is far more robust to viewing angle, and is what asymmetry actually
+    means here — one side doing less work than the other."""
     left, right = metrics.get(f"{signal}_left"), metrics.get(f"{signal}_right")
     if left is None or right is None or not reps:
         return None
     diffs = []
     for r in reps:
-        d = np.abs(left[r.start : r.end + 1] - right[r.start : r.end + 1])
-        if d.size and not np.all(np.isnan(d)):
-            diffs.append(float(np.nanmean(d)))
+        ls, rs = left[r.start : r.end + 1], right[r.start : r.end + 1]
+        if ls.size == 0 or np.all(np.isnan(ls)) or np.all(np.isnan(rs)):
+            continue
+        rom_l = float(np.nanmax(ls) - np.nanmin(ls))
+        rom_r = float(np.nanmax(rs) - np.nanmin(rs))
+        diffs.append(abs(rom_l - rom_r))
     return round(float(np.mean(diffs)), 1) if diffs else None
 
 
@@ -167,9 +186,12 @@ def key_metrics(
     signal = config.rep.signal
     durations = [(r.end - r.start) / fps for r in reps] if fps else []
     tempo = round(float(np.mean(durations)), 2) if durations else 0.0
+    # Coefficient of variation of rep duration. Needs >=3 reps to be meaningful —
+    # with 1-2 reps it's either undefined or dominated by frame-timing noise, so we
+    # report n/a (0.0) rather than a misleading number.
     consistency = (
         round(float(np.std(durations) / np.mean(durations) * 100), 0)
-        if len(durations) >= 2 and np.mean(durations) > 0
+        if len(durations) >= 3 and np.mean(durations) > 0
         else 0.0
     )
     sym = _symmetry(metrics, signal, reps)
@@ -200,11 +222,14 @@ def _sym_label(sym: float | None) -> str:
 
 
 def _cv_label(cv: float) -> str:
+    # Rep-to-rep tempo naturally varies; ~15% CV is still a controlled, even set.
+    # "poor" is aligned with the ~28% CV where the engine flags inconsistent tempo,
+    # so the label and the fault don't contradict each other.
     if cv == 0:
         return "n/a"
-    if cv <= 12:
+    if cv <= 15:
         return "good"
-    if cv <= 25:
+    if cv <= 28:
         return "fair"
     return "poor"
 

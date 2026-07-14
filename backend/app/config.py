@@ -36,10 +36,13 @@ class Settings(BaseSettings):
     # Directory holding the MediaPipe PoseLandmarker .task bundles.
     pose_models_dir: Path = Path(__file__).parent / "services" / "pose" / "models"
     # Model "complexity" is selected by which .task file is loaded (the Tasks API
-    # has no runtime complexity flag): 0=lite (fastest), 1=full (balanced default),
-    # 2=heavy (most accurate, slowest). Benchmark with scripts/benchmark_pose.py and
-    # set KINESIS_POSE_MODEL_COMPLEXITY to the fastest that keeps landmark accuracy.
-    pose_model_complexity: int = 1
+    # has no runtime complexity flag): 0=lite (fastest), 1=full, 2=heavy (most
+    # accurate, slowest). Inference is the dominant cost on the CPU-only deployment,
+    # so we default to lite — it keeps the joint-angle fidelity that rep detection
+    # and form scoring depend on while cutting per-frame inference ~2-3x vs full.
+    # Verify/compare with scripts/benchmark_pose.py; set KINESIS_POSE_MODEL_COMPLEXITY
+    # to 1 or 2 to revert to a heavier model.
+    pose_model_complexity: int = 0
     # Explicit model-file override. When unset, the path is derived from the
     # complexity above (falling back to the legacy ``pose_landmarker.task`` name).
     pose_model_path: Path | None = None

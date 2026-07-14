@@ -12,9 +12,11 @@ is no runtime complexity flag. Three variants map to complexity 0/1/2:
 | 1 (full)   | `pose_landmarker_full.task`   | balanced | better   |
 | 2 (heavy)  | `pose_landmarker_heavy.task`  | slowest  | best     |
 
-Select one at runtime with `KINESIS_POSE_MODEL_COMPLEXITY=0|1|2` (default `1`),
-or point `KINESIS_POSE_MODEL_PATH` at a specific file. The backend Docker image
-downloads all three at build time (see `backend/Dockerfile`).
+Select one at runtime with `KINESIS_POSE_MODEL_COMPLEXITY=0|1|2` (default `0`,
+lite — inference dominates analysis time on the CPU-only deployment, and lite
+preserves the joint-angle accuracy rep/form scoring needs), or point
+`KINESIS_POSE_MODEL_PATH` at a specific file. The backend Docker image downloads
+all three at build time (see `backend/Dockerfile`).
 
 Benchmark them on a representative clip to pick the fastest that stays accurate:
 

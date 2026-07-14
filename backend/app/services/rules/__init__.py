@@ -515,8 +515,10 @@ def _tempo_consistency(rc: RuleConfig, reps: list[RepWindow], ctx: EvalContext) 
 # --------------------------------------------------------------------------- #
 
 def _rep_score(faults: list[FaultDetection], base: float) -> float:
-    """Per-rep score: each fault costs points by severity (minor << severe)."""
-    score = base - sum(SEV_PENALTY.get(f.severity, 10.0) for f in faults)
+    """Per-rep score: each fault costs points by severity (minor << severe),
+    scaled by the fault's confidence so a poorly-observed fault (occluded joint or
+    a plane the camera can't see well) costs less than a clearly-seen one."""
+    score = base - sum(SEV_PENALTY.get(f.severity, 10.0) * f.confidence for f in faults)
     return max(0.0, round(score, 1))
 
 
