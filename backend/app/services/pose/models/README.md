@@ -33,3 +33,24 @@ curl -L -o pose_landmarker_full.task \
 
 The loader also accepts a legacy generic `pose_landmarker.task` here as a
 fallback when no complexity-named file is present.
+
+## Alternative backend: MoveNet (opt-in)
+
+`KINESIS_POSE_BACKEND=movenet` swaps in **MoveNet SinglePose Lightning** (TFLite),
+loaded from `movenet_lightning.tflite` in this directory (config
+`KINESIS_MOVENET_MODEL_PATH`). It's faster per frame, but emits **17 COCO
+keypoints** which `pose/movenet.py` adapts onto the 33-slot MediaPipe layout the
+biomechanics engine expects (x/y + confidence preserved; z=0; a 2D model).
+
+MoveNet has **no feet, hands, or mouth** keypoints, so those slots stay NaN and a
+few checks won't fire — notably squat `heels_lift` (heel/foot) and bicep-curl wrist
+angle (uses `index`). Everything using shoulder/elbow/wrist/hip/knee/ankle/ear works.
+
+Compare backends before switching:
+
+```bash
+python -m scripts.benchmark_pose clip.mp4 --backends mediapipe,movenet
+```
+
+The int8 Lightning model is downloaded at Docker build; for local dev drop your own
+`movenet_lightning.tflite` here and `pip install ".[movenet]"`.

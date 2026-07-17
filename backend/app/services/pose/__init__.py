@@ -363,10 +363,32 @@ def _extract(result) -> np.ndarray:
     return out
 
 
-def _decode_ffmpeg(video_path, landmarker, *, target_fps, max_dim, max_frames, ts_base=0, image_mode=False) -> _Decoded:
+class _MediaPipeBackend:
+    """Adapter wrapping MediaPipe PoseLandmarker behind the common backend contract
+    ``infer(rgb, ts_ms) -> (33, 4)`` / ``close()``. Behaviour is identical to the
+    previous inline path — this just lets the decode loop be model-agnostic so
+    MoveNet (or any future model) can be dropped in via the same interface."""
+
+    name = "mediapipe"
+
+    def __init__(self, landmarker, mp, image_mode: bool) -> None:
+        self._lm = landmarker
+        self._mp = mp
+        self._image_mode = image_mode
+
+    def infer(self, rgb: np.ndarray, ts_ms: int = 0) -> np.ndarray:
+        image = self._mp.Image(image_format=self._mp.ImageFormat.SRGB,
+                               data=np.ascontiguousarray(rgb))
+        result = self._lm.detect(image) if self._image_mode else self._lm.detect_for_video(image, ts_ms)
+        return _extract(result)
+
+    def close(self) -> None:
+        self._lm.close()
+
+
+def _decode_ffmpeg(video_path, backend, *, target_fps, max_dim, max_frames, ts_base=0) -> _Decoded:
     """Stream decoded+downscaled+decimated RGB frames from a single ffmpeg process
-    straight into MediaPipe, one frame at a time (never holding the whole clip)."""
-    import mediapipe as mp
+    straight into the pose ``backend``, one frame at a time (never holding the clip)."""
     _t = time.perf_counter
 
     dw, dh, src_fps = _probe(video_path)
@@ -404,16 +426,14 @@ def _decode_ffmpeg(video_path, landmarker, *, target_fps, max_dim, max_frames, t
             if d.kept == 0:
                 d.out_w, d.out_h = fw, fh
                 logger.info(
-                    "MediaPipe input frame resolution: %dx%d (source %dx%d, max_dim=%d, via ffmpeg)",
+                    "pose input frame resolution: %dx%d (source %dx%d, max_dim=%d, via ffmpeg)",
                     fw, fh, dw, dh, max_dim,
                 )
-            image = mp.Image(image_format=mp.ImageFormat.SRGB, data=np.ascontiguousarray(rgb))
             ts_ms = ts_base + int(d.kept * 1000.0 / eff)
             d.extract_s += _t() - _e0
             _i0 = _t()
-            result = landmarker.detect(image) if image_mode else landmarker.detect_for_video(image, ts_ms)
+            d.frames.append(backend.infer(rgb, ts_ms))
             d.infer_s += _t() - _i0
-            d.frames.append(_extract(result))
             d.kept += 1
     finally:
         try:
@@ -431,11 +451,10 @@ def _decode_ffmpeg(video_path, landmarker, *, target_fps, max_dim, max_frames, t
     return d
 
 
-def _decode_cv2(video_path, landmarker, *, target_fps, max_dim, max_frames, ts_base=0, image_mode=False) -> _Decoded:
+def _decode_cv2(video_path, backend, *, target_fps, max_dim, max_frames, ts_base=0) -> _Decoded:
     """OpenCV fallback: decode every source frame (``grab``), run inference on every
     ``step``-th one. Functionally identical output; kept for hosts without ffmpeg."""
     import cv2
-    import mediapipe as mp
     _t = time.perf_counter
 
     cap = cv2.VideoCapture(video_path)
@@ -484,16 +503,14 @@ def _decode_cv2(video_path, landmarker, *, target_fps, max_dim, max_frames, ts_b
                 if d.kept == 0:
                     d.out_w, d.out_h = fw, fh
                     logger.info(
-                        "MediaPipe input frame resolution: %dx%d (source %dx%d, max_dim=%d, via opencv)",
+                        "pose input frame resolution: %dx%d (source %dx%d, max_dim=%d, via opencv)",
                         fw, fh, d.width, d.height, max_dim,
                     )
-                image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
                 ts_ms = ts_base + int(d.kept * 1000.0 / eff)
                 d.extract_s += _t() - _e0
                 _i0 = _t()
-                result = landmarker.detect(image) if image_mode else landmarker.detect_for_video(image, ts_ms)
+                d.frames.append(backend.infer(frame_rgb, ts_ms))
                 d.infer_s += _t() - _i0
-                d.frames.append(_extract(result))
                 d.kept += 1
             src_idx += 1
     finally:
@@ -553,6 +570,7 @@ def run_pose(
     reuse_model: bool = True,
     running_mode: str = "video",
     num_threads: int = 0,
+    pose_backend: str = "mediapipe",
     timings: dict[str, float] | None = None,
 ) -> PoseResult:
     """Estimate pose over a clip, temporally downsampled and spatially downscaled.
@@ -563,36 +581,40 @@ def run_pose(
     (rep windows, joint-angle series, overlay) maps back to real time as ``frame/fps``.
     ``decoder``: "auto"/"ffmpeg" prefer the ffmpeg pipe (fall back to OpenCV), "cv2"
     forces OpenCV. ``running_mode``: "video" (tracking) or "image" (detect per frame).
-    ``num_threads``: best-effort CPU inference thread hint (see configure_inference_threads).
+    ``pose_backend``: "mediapipe" (default) or "movenet". Both emit the same 33-slot
+    landmark array via a backend adapter, so the analysis pipeline is untouched.
+    ``num_threads``: CPU inference thread hint (honoured directly by MoveNet/TFLite;
+    best-effort env-only for MediaPipe).
     """
     global _POSE_WARM
     cold_start = not _POSE_WARM
+    backend_name = pose_backend.lower()
 
     # Apply the thread hint before MediaPipe/TFLite import (its only chance to matter).
     configure_inference_threads(num_threads)
 
-    import mediapipe as mp  # noqa: F401 (imported so cold-start import cost is counted)
-    from mediapipe.tasks import python as mp_python
-    from mediapipe.tasks.python import vision as mp_vision
-
     if not Path(model_path).exists():
         raise FileNotFoundError(
-            f"Pose model not found at {model_path}. Download the model bundle "
-            "(see backend/app/services/pose/models/README.md)."
+            f"Pose model not found at {model_path} (backend={backend_name}). "
+            "See backend/app/services/pose/models/README.md."
         )
 
     _t = time.perf_counter
     image_mode = running_mode.lower() == "image"
-    mp_mode = mp_vision.RunningMode.IMAGE if image_mode else mp_vision.RunningMode.VIDEO
-    # A landmarker is bound to its running mode, so key the per-thread cache by both.
-    cache_key = f"{model_path}|{running_mode.lower()}"
+    # The cached backend is bound to model+mode+backend, so key on all three.
+    cache_key = f"{backend_name}|{model_path}|{running_mode.lower()}"
 
-    def make_landmarker():
-        # Pin the CPU delegate (headless, no GPU/display). VIDEO running mode
-        # (== static_image_mode False) carries tracking between frames so most frames
-        # are a cheap track, not a full detection; IMAGE mode runs a full detection
-        # every frame (no tracking). Segmentation masks are explicitly disabled — we
-        # never use them and they add real per-frame compute.
+    def make_backend():
+        if backend_name == "movenet":
+            from app.services.pose.movenet import MoveNetBackend
+            return MoveNetBackend(model_path, num_threads=num_threads)
+        # MediaPipe (default). Imported here so cold-start import cost is counted and
+        # MoveNet-only deployments don't need MediaPipe.
+        import mediapipe as mp
+        from mediapipe.tasks import python as mp_python
+        from mediapipe.tasks.python import vision as mp_vision
+
+        mp_mode = mp_vision.RunningMode.IMAGE if image_mode else mp_vision.RunningMode.VIDEO
         options = mp_vision.PoseLandmarkerOptions(
             base_options=mp_python.BaseOptions(
                 model_asset_path=model_path,
@@ -603,19 +625,17 @@ def run_pose(
             min_pose_detection_confidence=0.5,
             min_pose_presence_confidence=0.5,
             min_tracking_confidence=0.5,
-            output_segmentation_masks=False,
+            output_segmentation_masks=False,  # never used; disabled to save compute
         )
-        return mp_vision.PoseLandmarker.create_from_options(options)
+        return _MediaPipeBackend(mp_vision.PoseLandmarker.create_from_options(options), mp, image_mode)
 
     _init0 = _t()
-    landmarker, ts_base, reused = _acquire_landmarker(cache_key, make_landmarker, reuse_model)
+    backend, ts_base, reused = _acquire_landmarker(cache_key, make_backend, reuse_model)
     _init_s = _t() - _init0
 
-    # Surface a silent model fallback: if the requested complexity's variant file is
-    # missing, pose_model_file() falls back to another model and MediaPipe silently
-    # runs the wrong (usually slower) one. This warning makes that obvious in the logs.
+    # Surface a silent MediaPipe model fallback (only meaningful for that backend).
     _expected = {0: "lite", 1: "full", 2: "heavy"}.get(model_complexity)
-    if _expected and _expected not in Path(model_path).name.lower():
+    if backend_name == "mediapipe" and _expected and _expected not in Path(model_path).name.lower():
         logger.warning(
             "requested model_complexity=%s (%s) but loaded model file is '%s' — the "
             "'%s' variant is missing, so a DIFFERENT model is running. Rebuild the "
@@ -624,18 +644,17 @@ def run_pose(
         )
 
     logger.info(
-        "pose config: running_mode=%s (tracking %s) delegate=CPU num_poses=1 "
-        "detect_conf=0.50 track_conf=0.50 segmentation=off num_threads=%s cpu_count=%d "
-        "model_complexity=%s model_path=%s",
-        "IMAGE" if image_mode else "VIDEO", "off" if image_mode else "on",
-        num_threads or "default", multiprocessing.cpu_count(),
-        _complexity_of(model_path, model_complexity), model_path,
+        "pose config: backend=%s running_mode=%s (tracking %s) num_threads=%s cpu_count=%d "
+        "model=%s",
+        backend_name, "IMAGE" if image_mode else "VIDEO",
+        "off" if (image_mode or backend_name == "movenet") else "on",
+        num_threads or "default", multiprocessing.cpu_count(), Path(model_path).name,
     )
     if reused:
-        logger.info("pose model: reused cached landmarker (no graph build this analysis)")
+        logger.info("pose model: reused cached %s backend (no build this analysis)", backend_name)
     else:
         logger.info(
-            "pose model: built landmarker graph in %.0fms (%s)", _init_s * 1000,
+            "pose model: built %s backend in %.0fms (%s)", backend_name, _init_s * 1000,
             "cold start — first analysis in this process" if cold_start else "new worker thread / first use",
         )
 
@@ -653,31 +672,31 @@ def run_pose(
         if prefer_ffmpeg and _ffmpeg_available():
             try:
                 d = _decode_ffmpeg(
-                    video_path, landmarker, ts_base=ts_base, image_mode=image_mode,
+                    video_path, backend, ts_base=ts_base,
                     target_fps=target_fps, max_dim=max_dim, max_frames=max_frames,
                 )
                 used = "ffmpeg"
             except Exception as exc:  # noqa: BLE001 — any ffmpeg failure => safe fallback
                 logger.warning(
-                    "ffmpeg decode failed (%s); rebuilding landmarker and falling "
+                    "ffmpeg decode failed (%s); rebuilding backend and falling "
                     "back to the OpenCV decoder", exc,
                 )
-                # The instance may have been fed partial frames; use a fresh one (ts 0)
+                # The backend may have been fed partial frames; use a fresh one (ts 0)
                 # so VIDEO-mode timestamps stay clean, and re-cache it for reuse.
-                landmarker.close()
-                landmarker = make_landmarker()
+                backend.close()
+                backend = make_backend()
                 if reuse_model:
-                    _cache_landmarker(cache_key, landmarker)
+                    _cache_landmarker(cache_key, backend)
                 ts_base = 0
                 d = _decode_cv2(
-                    video_path, landmarker, ts_base=ts_base, image_mode=image_mode,
+                    video_path, backend, ts_base=ts_base,
                     target_fps=target_fps, max_dim=max_dim, max_frames=max_frames,
                 )
         else:
             if prefer_ffmpeg:
                 logger.info("ffmpeg/ffprobe not on PATH; using OpenCV decoder")
             d = _decode_cv2(
-                video_path, landmarker, ts_base=ts_base, image_mode=image_mode,
+                video_path, backend, ts_base=ts_base,
                 target_fps=target_fps, max_dim=max_dim, max_frames=max_frames,
             )
     except Exception:
@@ -685,15 +704,15 @@ def run_pose(
         # the next request rebuilds cleanly. (When not reusing, just close it.)
         if reuse_model:
             _evict_landmarker(cache_key)
-        landmarker.close()
+        backend.close()
         raise
 
     if reuse_model:
-        # IMAGE mode is stateless per frame; only VIDEO needs monotonic timestamps.
+        # IMAGE/MoveNet are stateless per frame; only MediaPipe VIDEO needs monotonic ts.
         last_ts = ts_base + int(max(0, d.kept - 1) * 1000.0 / d.effective_fps) if d.effective_fps else ts_base
         _advance_ts(cache_key, last_ts)
     else:
-        landmarker.close()
+        backend.close()
 
     if timings is not None:
         timings["pose_model_init"] = _init_s
@@ -702,19 +721,19 @@ def run_pose(
         timings["pose_estimation"] = d.infer_s
 
     logger.info(
-        "pose decoder=%s | source=%.1ffps → processed=%.1ffps; handled %d source "
-        "frames, inference on %d; source %dx%d → INTO MediaPipe %dx%d (max_dim=%d, target_fps=%.1f)",
-        used, d.src_fps, d.effective_fps, d.grabbed, d.kept,
+        "pose decoder=%s backend=%s | source=%.1ffps → processed=%.1ffps; handled %d "
+        "source frames, inference on %d; source %dx%d → INTO model %dx%d (max_dim=%d, target_fps=%.1f)",
+        used, backend_name, d.src_fps, d.effective_fps, d.grabbed, d.kept,
         d.width, d.height, d.out_w, d.out_h, max_dim, target_fps,
     )
     dec_ms = (d.decode_s / d.grabbed * 1000.0) if d.grabbed else 0.0
     inf_ms = (d.infer_s / d.kept * 1000.0) if d.kept else 0.0
     logger.info(
-        "pose timing: running_mode=%s num_threads=%s mediapipe_input=%dx%d "
-        "model_complexity=%s | frame_decode %.1fs (%d frames @ %.0fms) | "
-        "frame_extraction %.1fs | pose_estimation %.1fs (%d frames @ %.0fms/frame avg)",
-        "IMAGE" if image_mode else "VIDEO", num_threads or "default", d.out_w, d.out_h,
-        _complexity_of(model_path, model_complexity),
+        "pose timing: backend=%s running_mode=%s num_threads=%s model_input=%dx%d | "
+        "frame_decode %.1fs (%d frames @ %.0fms) | frame_extraction %.1fs | "
+        "pose_estimation %.1fs (%d frames @ %.0fms/frame avg)  [compare backends here]",
+        backend_name, "IMAGE" if image_mode else "VIDEO", num_threads or "default",
+        d.out_w, d.out_h,
         d.decode_s, d.grabbed, dec_ms, d.extract_s, d.infer_s, d.kept, inf_ms,
     )
 

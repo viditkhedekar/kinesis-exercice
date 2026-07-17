@@ -17,7 +17,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends --allow-unauthe
 WORKDIR /app
 
 COPY pyproject.toml ./
-RUN pip install --no-cache-dir .
+# Include the optional MoveNet backend (LiteRT/TFLite runtime) so KINESIS_POSE_BACKEND
+# can be switched to "movenet" without rebuilding.
+RUN pip install --no-cache-dir ".[movenet]"
 
 COPY . .
 
@@ -43,6 +45,15 @@ RUN set -eu; cd app/services/pose/models; ls -l *.task; \
       sz=$(wc -c < "$f"); \
       [ "$sz" -gt 1000000 ] || { echo "FATAL: model $f too small ($sz bytes) — download failed" >&2; exit 1; }; \
     done; echo "pose models verified OK"
+
+# MoveNet SinglePose Lightning (int8 TFLite) for the optional "movenet" backend.
+# NOTE: verify this URL is current for your build environment; the backend also works
+# if you drop your own movenet_lightning.tflite here.
+ARG MOVENET_URL=https://storage.googleapis.com/tfhub-lite-models/google/lite-model/movenet/singlepose/lightning/tflite/int8/4.tflite
+RUN curl -fL -o app/services/pose/models/movenet_lightning.tflite "${MOVENET_URL}" \
+    && sz=$(wc -c < app/services/pose/models/movenet_lightning.tflite) \
+    && [ "$sz" -gt 500000 ] || { echo "FATAL: movenet model too small ($sz) — download failed" >&2; exit 1; } \
+    && echo "movenet model verified OK ($sz bytes)"
 
 ENV PYTHONUNBUFFERED=1
 

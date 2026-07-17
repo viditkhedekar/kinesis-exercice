@@ -74,13 +74,13 @@ def _set_thread_env(n: int) -> None:
             os.environ[v] = str(n)
 
 
-def _run_pose_once(video, model_path, mode, args) -> dict:
+def _run_pose_once(video, model_path, mode, args, backend="mediapipe") -> dict:
     timings: dict = {}
     t0 = time.perf_counter()
     pose = run_pose(
         video, str(model_path), target_fps=args.fps, max_dim=args.max_dim,
         max_frames=args.max_frames, running_mode=mode, num_threads=args.threads or 0,
-        reuse_model=False, timings=timings,
+        pose_backend=backend, reuse_model=False, timings=timings,
     )
     total = time.perf_counter() - t0
     frames = len(pose.landmarks)
@@ -90,6 +90,34 @@ def _run_pose_once(video, model_path, mode, args) -> dict:
         "per_frame_ms": (infer / frames * 1000.0) if frames else 0.0,
         "landmarks": pose.landmarks,
     }
+
+
+def _backend_compare(args) -> None:
+    """Compare pose backends (e.g. mediapipe vs movenet) on the same clip: total
+    pose-estimation time, avg inference ms/frame, and MoveNet's landmark deviation
+    vs MediaPipe (the accuracy baseline)."""
+    _set_thread_env(args.threads)
+    s = get_settings()
+    backends = [b.strip() for b in args.backends.split(",") if b.strip()]
+    print(f"\n{'backend':<12}{'total':>9}{'pose_est':>10}{'/frame':>10}{'dev_vs_mediapipe':>18}")
+    print("-" * 59)
+    baseline = None
+    for backend in backends:
+        model = (str(s.movenet_model_path) if backend == "movenet"
+                 else str(_ensure_model(args.complexity, s.pose_models_dir)))
+        try:
+            r = _run_pose_once(args.video, model, "video", args, backend=backend)
+        except Exception as exc:  # noqa: BLE001
+            print(f"{backend:<12}  FAILED: {exc}")
+            continue
+        if backend == "mediapipe":
+            baseline = r["landmarks"]
+        dev = (_mean_landmark_deviation(r["landmarks"], baseline)
+               if baseline is not None and backend != "mediapipe" else float("nan"))
+        print(f"{backend:<12}{r['total']:>7.1f}s{r['infer']:>8.1f}s"
+              f"{r['per_frame_ms']:>8.0f}ms{dev:>18.5f}")
+    print("\nPick the fastest backend whose dev_vs_mediapipe stays small on your exercises, "
+          "then set KINESIS_POSE_BACKEND. (MoveNet lacks feet/hands — verify those checks.)")
 
 
 def _runtime_sweep(args) -> None:
@@ -140,8 +168,13 @@ def main() -> None:
     ap.add_argument("--threads", type=int, default=0, help="CPU inference threads for a single runtime run")
     ap.add_argument("--modes", default="video,image", help="Running modes to compare (default video,image)")
     ap.add_argument("--complexity", type=int, default=0, help="Model complexity for the runtime sweep")
+    ap.add_argument("--backends", default=None,
+                    help="Compare pose backends, e.g. mediapipe,movenet (accuracy vs MediaPipe)")
     args = ap.parse_args()
 
+    if args.backends:
+        _backend_compare(args)
+        return
     if args.runtime or args.sweep_threads:
         _runtime_sweep(args)
         return

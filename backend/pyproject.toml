@@ -24,6 +24,11 @@ dev = [
     "pytest>=8.0",
     "httpx>=0.27",
 ]
+# Alternative pose backend: MoveNet Lightning via the LiteRT (TFLite) runtime.
+# Installed in the Docker image so KINESIS_POSE_BACKEND=movenet works without a rebuild.
+movenet = [
+    "ai-edge-litert>=1.0",
+]
 
 [build-system]
 requires = ["setuptools>=68"]

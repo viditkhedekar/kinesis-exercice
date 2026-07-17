@@ -77,7 +77,14 @@ class Settings(BaseSettings):
     # Best-effort CPU inference thread hint (0 = library default). The MediaPipe Tasks
     # API has no thread knob, so this only sets math-lib env vars before load and may
     # be ignored by XNNPACK — benchmark to confirm it does anything on your host.
+    # (The MoveNet/TFLite backend DOES honour this directly.)
     pose_num_threads: int = 0
+    # Pose detection backend: "mediapipe" (33 landmarks, default) or "movenet"
+    # (MoveNet Lightning TFLite, 17 keypoints adapted to the 33-slot layout — faster,
+    # but no feet/hands, so a few foot/hand-based checks won't fire). Opt-in.
+    pose_backend: str = "mediapipe"
+    # MoveNet SinglePose Lightning .tflite model (used only when pose_backend="movenet").
+    movenet_model_path: Path = Path(__file__).parent / "services" / "pose" / "models" / "movenet_lightning.tflite"
 
     # --- Auth ---
     auth_secret: str = "dev-insecure-change-me"   # HMAC signing key for session tokens
@@ -132,6 +139,13 @@ class Settings(BaseSettings):
             return str(candidate)
         legacy = self.pose_models_dir / "pose_landmarker.task"
         return str(legacy if legacy.exists() else candidate)
+
+    def active_pose_model_file(self) -> str:
+        """Model path for the *selected* backend: the MoveNet .tflite when
+        pose_backend='movenet', otherwise the MediaPipe .task."""
+        if self.pose_backend.lower() == "movenet":
+            return str(self.movenet_model_path)
+        return self.pose_model_file()
 
 
 @lru_cache
