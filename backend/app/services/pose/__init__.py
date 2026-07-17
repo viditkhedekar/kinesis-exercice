@@ -25,6 +25,7 @@ import multiprocessing
 import platform
 import shutil
 import subprocess
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -34,6 +35,13 @@ import numpy as np
 from app.services.pose.landmarks import NUM_LANDMARKS, POSE_EDGES  # noqa: F401 (re-export)
 
 logger = logging.getLogger("kinesis.pose")
+
+# One PoseLandmarker per worker thread, reused across requests (building the graph
+# costs ~1-2s). Thread-local avoids sharing a single instance across threads (a
+# PoseLandmarker isn't safe for concurrent calls). VIDEO running mode requires
+# strictly-increasing timestamps for the life of an instance, so we also carry a
+# per-instance monotonic timestamp base across the analyses that reuse it.
+_thread_state = threading.local()
 
 
 @dataclass
@@ -251,7 +259,7 @@ def _extract(result) -> np.ndarray:
     return out
 
 
-def _decode_ffmpeg(video_path, landmarker, *, target_fps, max_dim, max_frames) -> _Decoded:
+def _decode_ffmpeg(video_path, landmarker, *, target_fps, max_dim, max_frames, ts_base=0) -> _Decoded:
     """Stream decoded+downscaled+decimated RGB frames from a single ffmpeg process
     straight into MediaPipe, one frame at a time (never holding the whole clip)."""
     import mediapipe as mp
@@ -289,7 +297,7 @@ def _decode_ffmpeg(video_path, landmarker, *, target_fps, max_dim, max_frames) -
             _e0 = _t()
             rgb = np.frombuffer(buf, dtype=np.uint8).reshape(out_h, out_w, 3)
             image = mp.Image(image_format=mp.ImageFormat.SRGB, data=np.ascontiguousarray(rgb))
-            ts_ms = int(d.kept * 1000.0 / eff)
+            ts_ms = ts_base + int(d.kept * 1000.0 / eff)
             d.extract_s += _t() - _e0
             _i0 = _t()
             result = landmarker.detect_for_video(image, ts_ms)
@@ -312,7 +320,7 @@ def _decode_ffmpeg(video_path, landmarker, *, target_fps, max_dim, max_frames) -
     return d
 
 
-def _decode_cv2(video_path, landmarker, *, target_fps, max_dim, max_frames) -> _Decoded:
+def _decode_cv2(video_path, landmarker, *, target_fps, max_dim, max_frames, ts_base=0) -> _Decoded:
     """OpenCV fallback: decode every source frame (``grab``), run inference on every
     ``step``-th one. Functionally identical output; kept for hosts without ffmpeg."""
     import cv2
@@ -362,7 +370,7 @@ def _decode_cv2(video_path, landmarker, *, target_fps, max_dim, max_frames) -> _
                     d.out_h, d.out_w = frame_bgr.shape[:2]
                 frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
                 image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
-                ts_ms = int(d.kept * 1000.0 / eff)
+                ts_ms = ts_base + int(d.kept * 1000.0 / eff)
                 d.extract_s += _t() - _e0
                 _i0 = _t()
                 result = landmarker.detect_for_video(image, ts_ms)
@@ -375,15 +383,56 @@ def _decode_cv2(video_path, landmarker, *, target_fps, max_dim, max_frames) -> _
     return d
 
 
+def _acquire_landmarker(model_path, make_fn, reuse):
+    """Return ``(landmarker, ts_base, reused)``. With ``reuse`` we cache one
+    landmarker per thread per model and carry a per-instance monotonic timestamp
+    base so VIDEO-mode timestamps keep increasing across the analyses that reuse it."""
+    if not reuse:
+        return make_fn(), 0, False
+    cache = getattr(_thread_state, "landmarkers", None)
+    if cache is None:
+        cache = _thread_state.landmarkers = {}
+        _thread_state.ts_base = {}
+    lm = cache.get(model_path)
+    if lm is not None:
+        return lm, _thread_state.ts_base.get(model_path, 0), True
+    lm = cache[model_path] = make_fn()
+    _thread_state.ts_base[model_path] = 0
+    return lm, 0, False
+
+
+def _cache_landmarker(model_path, lm):
+    """Install ``lm`` as this thread's cached instance (after a fallback rebuild)."""
+    cache = getattr(_thread_state, "landmarkers", None)
+    if cache is None:
+        cache = _thread_state.landmarkers = {}
+        _thread_state.ts_base = {}
+    cache[model_path] = lm
+    _thread_state.ts_base[model_path] = 0
+
+
+def _evict_landmarker(model_path):
+    if getattr(_thread_state, "landmarkers", None) is not None:
+        _thread_state.landmarkers.pop(model_path, None)
+        getattr(_thread_state, "ts_base", {}).pop(model_path, None)
+
+
+def _advance_ts(model_path, last_ts_ms):
+    base = getattr(_thread_state, "ts_base", None)
+    if base is not None and model_path in base:
+        base[model_path] = last_ts_ms + 1000  # gap keeps the next reuse monotonic
+
+
 def run_pose(
     video_path: str,
     model_path: str,
     *,
     target_fps: float = 8.0,
-    max_dim: int = 720,
+    max_dim: int = 640,
     max_frames: int = 600,
     decoder: str = "auto",
     model_complexity: int | None = None,
+    reuse_model: bool = True,
     timings: dict[str, float] | None = None,
 ) -> PoseResult:
     """Estimate pose over a clip, temporally downsampled and spatially downscaled.
@@ -411,8 +460,10 @@ def run_pose(
     _t = time.perf_counter
 
     def make_landmarker():
-        # Pin the CPU delegate (headless, no GPU/display). VIDEO running mode carries
-        # tracking between frames so most frames are a cheap track, not a full detect.
+        # Pin the CPU delegate (headless, no GPU/display). VIDEO running mode
+        # (== static_image_mode False) carries tracking between frames so most frames
+        # are a cheap track, not a full detection. Segmentation masks are explicitly
+        # disabled — we never use them and they add real per-frame compute.
         options = mp_vision.PoseLandmarkerOptions(
             base_options=mp_python.BaseOptions(
                 model_asset_path=model_path,
@@ -423,32 +474,42 @@ def run_pose(
             min_pose_detection_confidence=0.5,
             min_pose_presence_confidence=0.5,
             min_tracking_confidence=0.5,
+            output_segmentation_masks=False,
         )
         return mp_vision.PoseLandmarker.create_from_options(options)
 
     _init0 = _t()
-    landmarker = make_landmarker()
+    landmarker, ts_base, reused = _acquire_landmarker(model_path, make_landmarker, reuse_model)
     _init_s = _t() - _init0
 
-    logger.info(
-        "pose config: running_mode=VIDEO (tracking on) delegate=CPU num_poses=1 "
-        "detect_conf=0.50 track_conf=0.50 model=%s",
-        Path(model_path).name,
-    )
-    if cold_start:
-        logger.info(
-            "pose model loaded from scratch (COLD start — first analysis in this "
-            "process: lazy-imported MediaPipe/OpenCV + built landmarker graph); "
-            "graph build %.0fms", _init_s * 1000,
+    # Surface a silent model fallback: if the requested complexity's variant file is
+    # missing, pose_model_file() falls back to another model and MediaPipe silently
+    # runs the wrong (usually slower) one. This warning makes that obvious in the logs.
+    _expected = {0: "lite", 1: "full", 2: "heavy"}.get(model_complexity)
+    if _expected and _expected not in Path(model_path).name.lower():
+        logger.warning(
+            "requested model_complexity=%s (%s) but loaded model file is '%s' — the "
+            "'%s' variant is missing, so a DIFFERENT model is running. Rebuild the "
+            "image so pose_landmarker_%s.task is present.",
+            model_complexity, _expected, Path(model_path).name, _expected, _expected,
         )
+
+    logger.info(
+        "pose config: running_mode=VIDEO (static_image_mode=False, tracking on) "
+        "delegate=CPU num_poses=1 detect_conf=0.50 track_conf=0.50 segmentation=off "
+        "model=%s complexity=%s",
+        Path(model_path).name, _complexity_of(model_path, model_complexity),
+    )
+    if reused:
+        logger.info("pose model: reused cached landmarker (no graph build this analysis)")
     else:
         logger.info(
-            "pose model: CV modules reused from memory (process warm); landmarker "
-            "graph rebuilt fresh for this analysis in %.0fms", _init_s * 1000,
+            "pose model: built landmarker graph in %.0fms (%s)", _init_s * 1000,
+            "cold start — first analysis in this process" if cold_start else "new worker thread / first use",
         )
 
     # Once-per-analysis diagnostics, emitted BEFORE any pose estimation runs, so the
-    # logs pin down whether ~90s is frame count, resolution, config, or CPU limits.
+    # logs pin down whether the time is frame count, resolution, config, or CPU limits.
     _log_pose_diagnostics(
         video_path, model_path,
         target_fps=target_fps, max_dim=max_dim, max_frames=max_frames,
@@ -461,7 +522,7 @@ def run_pose(
         if prefer_ffmpeg and _ffmpeg_available():
             try:
                 d = _decode_ffmpeg(
-                    video_path, landmarker,
+                    video_path, landmarker, ts_base=ts_base,
                     target_fps=target_fps, max_dim=max_dim, max_frames=max_frames,
                 )
                 used = "ffmpeg"
@@ -470,20 +531,36 @@ def run_pose(
                     "ffmpeg decode failed (%s); rebuilding landmarker and falling "
                     "back to the OpenCV decoder", exc,
                 )
+                # The instance may have been fed partial frames; use a fresh one (ts 0)
+                # so VIDEO-mode timestamps stay clean, and re-cache it for reuse.
                 landmarker.close()
-                landmarker = make_landmarker()  # fresh timestamps for VIDEO mode
+                landmarker = make_landmarker()
+                if reuse_model:
+                    _cache_landmarker(model_path, landmarker)
+                ts_base = 0
                 d = _decode_cv2(
-                    video_path, landmarker,
+                    video_path, landmarker, ts_base=ts_base,
                     target_fps=target_fps, max_dim=max_dim, max_frames=max_frames,
                 )
         else:
             if prefer_ffmpeg:
                 logger.info("ffmpeg/ffprobe not on PATH; using OpenCV decoder")
             d = _decode_cv2(
-                video_path, landmarker,
+                video_path, landmarker, ts_base=ts_base,
                 target_fps=target_fps, max_dim=max_dim, max_frames=max_frames,
             )
-    finally:
+    except Exception:
+        # A failed analysis may have left the cached instance mid-stream; drop it so
+        # the next request rebuilds cleanly. (When not reusing, just close it.)
+        if reuse_model:
+            _evict_landmarker(model_path)
+        landmarker.close()
+        raise
+
+    if reuse_model:
+        last_ts = ts_base + int(max(0, d.kept - 1) * 1000.0 / d.effective_fps) if d.effective_fps else ts_base
+        _advance_ts(model_path, last_ts)
+    else:
         landmarker.close()
 
     if timings is not None:
@@ -494,15 +571,17 @@ def run_pose(
 
     logger.info(
         "pose decoder=%s | source=%.1ffps → processed=%.1ffps; handled %d source "
-        "frames, inference on %d; input %dx%d → analysed %dx%d (max_dim=%d, target_fps=%.1f)",
+        "frames, inference on %d; source %dx%d → INTO MediaPipe %dx%d (max_dim=%d, target_fps=%.1f)",
         used, d.src_fps, d.effective_fps, d.grabbed, d.kept,
         d.width, d.height, d.out_w, d.out_h, max_dim, target_fps,
     )
     dec_ms = (d.decode_s / d.grabbed * 1000.0) if d.grabbed else 0.0
     inf_ms = (d.infer_s / d.kept * 1000.0) if d.kept else 0.0
     logger.info(
-        "pose timing: frame_decode %.1fs (%d frames @ %.0fms) | frame_extraction "
-        "%.1fs | pose_estimation %.1fs (%d frames @ %.0fms)",
+        "pose timing: mediapipe_input=%dx%d model_complexity=%s | frame_decode %.1fs "
+        "(%d frames @ %.0fms) | frame_extraction %.1fs | pose_estimation %.1fs "
+        "(%d frames @ %.0fms/frame avg)",
+        d.out_w, d.out_h, _complexity_of(model_path, model_complexity),
         d.decode_s, d.grabbed, dec_ms, d.extract_s, d.infer_s, d.kept, inf_ms,
     )
 

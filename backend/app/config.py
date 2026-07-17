@@ -56,16 +56,20 @@ class Settings(BaseSettings):
     # ~8 fps keeps enough temporal resolution for rep counting and technique while
     # minimising decoded/processed frames.
     pose_target_fps: float = 8.0      # sample the source down to ~this fps
-    # Longest side is capped to this before inference (<= 720p). MediaPipe internally
-    # rescales to ~256px, so this is lossless for the analysis. The original upload is
-    # never modified — only in-memory/ffmpeg-piped frames are downscaled.
-    pose_max_dim: int = 720           # downscale so the longest side is <= this
+    # Longest side is capped to this before inference. 640 => ~640x360 for 16:9.
+    # MediaPipe rescales internally to ~256px, so this is lossless for the analysis
+    # while cutting decode/preprocess work. Never modifies the original upload.
+    pose_max_dim: int = 640           # downscale so the longest side is <= this
     pose_max_frames: int = 600        # hard cap on processed frames (bounds runtime)
     # Video decoder: "ffmpeg" (default; single C subprocess does decode+scale+fps
     # decimation and streams frames into MediaPipe — far faster than decoding every
     # frame in Python) with automatic fallback to OpenCV when ffmpeg isn't on PATH.
     # Set "cv2" to force the OpenCV decoder.
     pose_decoder: str = "ffmpeg"
+    # Reuse one PoseLandmarker per worker thread across requests instead of building
+    # a fresh graph every analysis (saves the ~1-2s init). Set False to force a fresh
+    # landmarker per analysis (the previous behaviour).
+    pose_reuse_model: bool = True
 
     # --- Auth ---
     auth_secret: str = "dev-insecure-change-me"   # HMAC signing key for session tokens
