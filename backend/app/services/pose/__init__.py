@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import json
 import logging
+import multiprocessing
+import platform
 import shutil
 import subprocess
 import time
@@ -129,6 +131,103 @@ def _scaled_dims(dw: int, dh: int, max_dim: int) -> tuple[int, int]:
     sw -= sw % 2
     sh -= sh % 2
     return max(2, sw), max(2, sh)
+
+
+def _video_meta(video_path: str) -> dict:
+    """Read-only clip metadata for diagnostics: display width/height (rotation
+    applied), source fps, duration (s) and frame count. Prefers ffprobe; falls back
+    to OpenCV capture *properties* (no frame decoding). Best-effort — unknown fields
+    come back as 0. Does not touch the analysis path."""
+    meta = {"width": 0, "height": 0, "fps": 0.0, "duration": 0.0, "frames": 0, "source": "none"}
+    if _ffmpeg_available():
+        try:
+            out = subprocess.run(
+                ["ffprobe", "-v", "error", "-select_streams", "v:0",
+                 "-show_streams", "-show_format", "-of", "json", video_path],
+                capture_output=True, text=True, timeout=60,
+            )
+            data = json.loads(out.stdout or "{}")
+            st = (data.get("streams") or [{}])[0]
+            w, h = int(st.get("width") or 0), int(st.get("height") or 0)
+            rot = 0
+            for sd in st.get("side_data_list", []):
+                if "rotation" in sd:
+                    rot = int(round(float(sd["rotation"])))
+                    break
+            if rot == 0 and (st.get("tags") or {}).get("rotate") is not None:
+                rot = int(round(float(st["tags"]["rotate"])))
+            if abs(rot) % 180 == 90:
+                w, h = h, w
+            fps = _parse_rate(st.get("avg_frame_rate")) or _parse_rate(st.get("r_frame_rate"))
+            dur = float(st.get("duration") or (data.get("format") or {}).get("duration") or 0.0)
+            nb = int(st.get("nb_frames") or 0)
+            if not nb and fps and dur:
+                nb = round(fps * dur)
+            meta.update(width=w, height=h, fps=fps, duration=dur, frames=nb, source="ffprobe")
+            return meta
+        except Exception:  # noqa: BLE001 — diagnostics must never break analysis
+            pass
+    try:
+        import cv2
+        cap = cv2.VideoCapture(video_path)
+        if cap.isOpened():
+            cap.set(cv2.CAP_PROP_ORIENTATION_AUTO, 1.0)
+            fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+            nb = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+            w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+            h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+            meta.update(width=w, height=h, fps=fps, duration=(nb / fps if fps else 0.0),
+                        frames=nb, source="cv2")
+        cap.release()
+    except Exception:  # noqa: BLE001
+        pass
+    return meta
+
+
+def _complexity_of(model_path: str, model_complexity: int | None) -> str:
+    """The configured MediaPipe complexity, or inferred from the model filename."""
+    if model_complexity is not None:
+        return str(model_complexity)
+    name = Path(model_path).name.lower()
+    for c, tag in ((0, "lite"), (1, "full"), (2, "heavy")):
+        if tag in name:
+            return f"{c} ({tag})"
+    return "unknown"
+
+
+def _log_pose_diagnostics(
+    video_path: str, model_path: str, *,
+    target_fps: float, max_dim: int, max_frames: int, model_complexity: int | None,
+) -> None:
+    """Emit a single once-per-analysis diagnostic block BEFORE pose estimation, to
+    localise the bottleneck (frame count vs resolution vs config vs CPU)."""
+    m = _video_meta(video_path)
+    w, h, src_fps, dur, frames = m["width"], m["height"], m["fps"], m["duration"], m["frames"]
+    out_w, out_h = _scaled_dims(w, h, max_dim) if (w and h) else (0, 0)
+    # Estimated frames MediaPipe will process (actual count is logged after decode).
+    if dur > 0:
+        est = round(dur * target_fps)
+    elif frames and src_fps:
+        est = round(frames * target_fps / src_fps)
+    else:
+        est = 0
+    est = min(max_frames, est) if est else 0
+
+    logger.info(
+        "pose diagnostics [video]: duration=%.2fs source_fps=%.2f source_frames=%d "
+        "resolution=%dx%d (meta via %s)",
+        dur, src_fps, frames, w, h, m["source"],
+    )
+    logger.info(
+        "pose diagnostics [plan]: target_fps=%.1f est_frames_to_process=%d (cap=%d) "
+        "mediapipe_input=%dx%d model_complexity=%s static_image_mode=False(running_mode=VIDEO,tracking on)",
+        target_fps, est, max_frames, out_w, out_h,
+        _complexity_of(model_path, model_complexity),
+    )
+    logger.info(
+        "pose diagnostics [host]: cpu_count=%d machine=%s processor=%s",
+        multiprocessing.cpu_count(), platform.machine() or "?", platform.processor() or "?",
+    )
 
 
 def _read_exact(stream, n: int) -> bytes:
@@ -284,6 +383,7 @@ def run_pose(
     max_dim: int = 720,
     max_frames: int = 600,
     decoder: str = "auto",
+    model_complexity: int | None = None,
     timings: dict[str, float] | None = None,
 ) -> PoseResult:
     """Estimate pose over a clip, temporally downsampled and spatially downscaled.
@@ -346,6 +446,14 @@ def run_pose(
             "pose model: CV modules reused from memory (process warm); landmarker "
             "graph rebuilt fresh for this analysis in %.0fms", _init_s * 1000,
         )
+
+    # Once-per-analysis diagnostics, emitted BEFORE any pose estimation runs, so the
+    # logs pin down whether ~90s is frame count, resolution, config, or CPU limits.
+    _log_pose_diagnostics(
+        video_path, model_path,
+        target_fps=target_fps, max_dim=max_dim, max_frames=max_frames,
+        model_complexity=model_complexity,
+    )
 
     prefer_ffmpeg = decoder in ("auto", "ffmpeg")
     used = "opencv"
