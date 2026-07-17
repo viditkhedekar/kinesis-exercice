@@ -196,7 +196,9 @@ def run_pipeline(session_id: int, timer: StageTimer | None = None) -> None:
             reuse_model=settings.pose_reuse_model,
             running_mode=settings.pose_running_mode,
             num_threads=settings.pose_num_threads,
-            pose_backend=settings.pose_backend,
+            pose_backend=settings.resolve_backend(),
+            mediapipe_model_path=settings.pose_model_file(),  # runtime fallback target
+            ffmpeg_fast_decode=settings.pose_ffmpeg_fast_decode,
             timings=pose_timings,
         )
         if timer is not None:

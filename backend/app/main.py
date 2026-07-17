@@ -1,6 +1,7 @@
 """physIQal FastAPI application."""
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -46,11 +47,23 @@ async def lifespan(app: FastAPI):
     configure_logging()  # idempotent; also covers non-uvicorn entrypoints
     # Log the pose-model inventory once at boot so the deployed logs immediately show
     # which model files shipped in the image and whether lite is actually resolved.
-    from app.services.pose import configure_inference_threads, log_model_inventory
+    from app.services.pose import (
+        configure_inference_threads, log_cpu_diagnostics, log_model_inventory,
+    )
 
     s = get_settings()
     configure_inference_threads(s.pose_num_threads)  # before MediaPipe/TFLite import
+    log_cpu_diagnostics(s.pose_num_threads)  # real CPU budget + throttling verdict
     log_model_inventory(s.pose_models_dir, s.pose_model_file(), s.pose_model_complexity)
+    # Show which pose backend will actually be used (pose_backend="auto" resolves to
+    # MoveNet when its model is present), so the boot logs answer "is MoveNet active?".
+    logger = logging.getLogger("kinesis.pose")
+    resolved = s.resolve_backend()
+    logger.info(
+        "pose backend selection: configured=%s -> resolved=%s | movenet_model=%s (%s)",
+        s.pose_backend, resolved, s.movenet_model_path.name,
+        "present" if s.movenet_model_path.exists() else "MISSING",
+    )
     seed_exercises()
     yield
 

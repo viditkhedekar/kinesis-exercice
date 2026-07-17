@@ -88,33 +88,106 @@ def configure_inference_threads(num_threads: int) -> None:
                 ", ".join(f"{v}={os.environ.get(v)}" for v in _THREAD_ENV_VARS))
 
 
+def _read_cpu_stat(path: str) -> dict | None:
+    """Parse a cgroup ``cpu.stat`` file into {key: int} (throttling counters)."""
+    try:
+        with open(path) as fh:
+            return {k: int(v) for k, v in (ln.split(None, 1) for ln in fh.read().splitlines() if " " in ln)}
+    except (OSError, ValueError):
+        return None
+
+
 def cpu_budget() -> dict:
     """The process's *real* CPU budget — not just ``cpu_count()`` which reports the
-    host cores and hides container CPU limits. Reads scheduler affinity and the
-    cgroup CFS quota (v2 then v1) so the logs reveal a fractional-vCPU cap."""
-    info: dict = {"cpu_count": multiprocessing.cpu_count()}
+    host cores and hides container CPU limits. Reads scheduler affinity, the cgroup
+    CFS quota (v2 then v1), and the throttling counters, so the logs reveal a
+    fractional-vCPU cap and whether the scheduler is actively throttling us."""
+    info: dict = {
+        "cpu_count": multiprocessing.cpu_count(),  # host cores (misleading in a container)
+        "affinity": None,                          # cores this process may run on
+        "cgroup_version": None,
+        "cpu_max_raw": None,                       # raw /sys/fs/cgroup/cpu.max
+        "cgroup_quota_cpus": None,                 # effective CPU quota, in cores
+        "throttling": None,                        # cpu.stat throttling counters
+    }
     try:
         info["affinity"] = len(os.sched_getaffinity(0))
     except (AttributeError, OSError):
-        info["affinity"] = None
+        pass
+
     quota = None
     try:  # cgroup v2
         with open("/sys/fs/cgroup/cpu.max") as fh:
-            q, p = fh.read().split()
-            if q != "max":
-                quota = int(q) / int(p)
+            raw = fh.read().strip()
+        info["cgroup_version"] = "v2"
+        info["cpu_max_raw"] = raw
+        parts = raw.split()
+        if len(parts) == 2 and parts[0] != "max":
+            quota = int(parts[0]) / int(parts[1])
+        info["throttling"] = _read_cpu_stat("/sys/fs/cgroup/cpu.stat")
     except OSError:
         try:  # cgroup v1
             with open("/sys/fs/cgroup/cpu/cpu.cfs_quota_us") as fh:
                 q = int(fh.read())
             with open("/sys/fs/cgroup/cpu/cpu.cfs_period_us") as fh:
                 p = int(fh.read())
+            info["cgroup_version"] = "v1"
+            info["cpu_max_raw"] = f"{q} {p} (cfs_quota_us cfs_period_us)"
             if q > 0 and p > 0:
                 quota = q / p
+            info["throttling"] = _read_cpu_stat("/sys/fs/cgroup/cpu/cpu.stat")
         except OSError:
             pass
+
     info["cgroup_quota_cpus"] = round(quota, 3) if quota is not None else None
     return info
+
+
+def log_cpu_diagnostics(num_threads: int = 0) -> None:
+    """Log the container's real CPU budget + a throttling verdict, and the configured
+    TFLite inference thread count. Answers 'is this container throttled despite
+    reporting N cores?' directly in the deployed logs."""
+    b = cpu_budget()
+    quota, cores = b["cgroup_quota_cpus"], b["cpu_count"]
+
+    logger.info(
+        "cpu diagnostics: cpu_count(host)=%s affinity=%s | cgroup=%s cpu.max=%r | "
+        "effective_quota_cpus=%s",
+        cores, b["affinity"], b["cgroup_version"], b["cpu_max_raw"], quota,
+    )
+    if b["throttling"]:
+        t = b["throttling"]
+        # v2 reports throttled_usec; v1 reports throttled_time (ns).
+        thr = t.get("throttled_usec")
+        thr_s = (thr / 1e6) if thr is not None else (t.get("throttled_time", 0) / 1e9)
+        periods, nr_thr = t.get("nr_periods", 0), t.get("nr_throttled", 0)
+        pct = (100.0 * nr_thr / periods) if periods else 0.0
+        logger.info(
+            "cpu throttling: nr_periods=%d nr_throttled=%d (%.0f%% of periods) throttled_total=%.1fs",
+            periods, nr_thr, pct, thr_s,
+        )
+
+    if quota is not None and quota < cores:
+        logger.warning(
+            "CPU THROTTLED: this container is limited to ~%.2f CPU(s) by its cgroup quota, "
+            "even though cpu_count() reports %s host cores. Pose decode + inference are "
+            "CPU-bound, so they run ~%.0fx slower than the reported core count suggests. "
+            "The durable fix is a Render plan with more CPU.",
+            quota, cores, (cores / quota) if quota else 0,
+        )
+    elif quota is None:
+        logger.info("cpu diagnostics: no cgroup CPU quota found — not CFS-throttled (or cgroup unreadable).")
+    else:
+        logger.info("cpu diagnostics: cgroup quota (%.2f) >= host cores — not throttled.", quota)
+
+    # TFLite/XNNPACK inference threads. The MediaPipe Tasks API has no thread knob;
+    # MoveNet/TFLite honours num_threads directly. 0 = library default (typically 1).
+    threads_note = (
+        "single-threaded (library default; set KINESIS_POSE_NUM_THREADS to use more, "
+        "but only helps if quota permits >1 core)"
+        if not num_threads else f"{num_threads} (KINESIS_POSE_NUM_THREADS)"
+    )
+    logger.info("tflite inference threads: configured=%s", threads_note)
 
 
 def log_model_inventory(models_dir, resolved_path, complexity) -> None:
@@ -123,17 +196,9 @@ def log_model_inventory(models_dir, resolved_path, complexity) -> None:
     different model. Called at startup so the deployed logs immediately reveal
     whether the intended (lite) model is actually present in the image."""
     p = Path(models_dir)
-    files = sorted(p.glob("*.task")) if p.exists() else []
+    files = sorted(p.glob("*.task")) + sorted(p.glob("*.tflite")) if p.exists() else []
     listing = ", ".join(f"{f.name}={f.stat().st_size // 1024}KB" for f in files) or "(none)"
-    b = cpu_budget()
-    logger.info(
-        "pose model inventory: dir=%s | files=[%s]", p, listing,
-    )
-    logger.info(
-        "cpu budget: cpu_count=%s affinity=%s cgroup_quota_cpus=%s "
-        "(if quota << cpu_count, MediaPipe threads are contending for a fraction of a core)",
-        b["cpu_count"], b["affinity"], b["cgroup_quota_cpus"],
-    )
+    logger.info("pose model inventory: dir=%s | files=[%s]", p, listing)
 
     rp = Path(resolved_path)
     if rp.exists():
@@ -386,26 +451,40 @@ class _MediaPipeBackend:
         self._lm.close()
 
 
-def _decode_ffmpeg(video_path, backend, *, target_fps, max_dim, max_frames, ts_base=0) -> _Decoded:
+def _decode_ffmpeg(video_path, backend, *, target_fps, max_dim, max_frames, ts_base=0,
+                   fast_decode=True) -> _Decoded:
     """Stream decoded+downscaled+decimated RGB frames from a single ffmpeg process
-    straight into the pose ``backend``, one frame at a time (never holding the clip)."""
+    straight into the pose ``backend``, one frame at a time (never holding the clip).
+
+    ALL preprocessing (decode, autorotate, fps decimation, downscale to <=max_dim,
+    RGB conversion) happens inside ffmpeg in C; Python only ever receives the small,
+    already-scaled frames — it never touches the full-resolution source."""
     _t = time.perf_counter
 
     dw, dh, src_fps = _probe(video_path)
     out_w, out_h = _scaled_dims(dw, dh, max_dim)
     eff = float(target_fps) if target_fps and target_fps > 0 else (src_fps or 30.0)
+    scale_flags = "fast_bilinear" if fast_decode else "bilinear"
 
-    # ffmpeg autorotates by default; ``fps`` decimates and ``scale`` downsizes, both
-    # in C, and we only receive the kept frames as raw RGB. This is where "reduced
-    # FPS reduces the frames we decode/handle" actually happens: ffmpeg emits ~eff
-    # fps, so our loop touches only those frames (grabbed == kept), instead of the
-    # OpenCV path that must step through every source frame.
+    # Input (decode) options come BEFORE -i. ``-threads 0`` = auto multi-threaded
+    # decode; ``-skip_loop_filter all`` skips H.264 deblocking (the main safe decode
+    # speedup — irrelevant to landmarks after downscaling). ``fps`` runs before
+    # ``scale`` so scaling only touches the kept frames. We receive ~eff fps frames,
+    # so grabbed == kept (no wasted Python-side handling of dropped frames).
+    in_opts = ["-threads", "0"]
+    if fast_decode:
+        in_opts += ["-skip_loop_filter", "all"]
     cmd = [
-        "ffmpeg", "-nostdin", "-loglevel", "error", "-i", video_path,
+        "ffmpeg", "-nostdin", "-loglevel", "error", *in_opts, "-i", video_path,
         "-an", "-sn",
-        "-vf", f"fps={eff:g},scale={out_w}:{out_h}",
+        "-vf", f"fps={eff:g},scale={out_w}:{out_h}:flags={scale_flags}",
         "-map", "0:v:0", "-pix_fmt", "rgb24", "-f", "rawvideo", "-",
     ]
+    logger.info(
+        "ffmpeg preprocess: source %dx%d @ %.1ffps -> output %dx%d @ %.1ffps rgb24 "
+        "(fast_decode=%s); cmd: %s",
+        dw, dh, src_fps, out_w, out_h, eff, fast_decode, " ".join(cmd),
+    )
     d = _Decoded(width=dw, height=dh, out_w=out_w, out_h=out_h,
                  src_fps=src_fps, effective_fps=eff)
     frame_bytes = out_w * out_h * 3
@@ -425,8 +504,11 @@ def _decode_ffmpeg(video_path, backend, *, target_fps, max_dim, max_frames, ts_b
             rgb, fw, fh = _fit_max_dim(rgb, max_dim)  # safety net; ffmpeg already scaled
             if d.kept == 0:
                 d.out_w, d.out_h = fw, fh
+                # Confirms Python received a pre-scaled frame from ffmpeg — NOT the
+                # full-resolution source. fw/fh should equal the ffmpeg output dims.
                 logger.info(
-                    "pose input frame resolution: %dx%d (source %dx%d, max_dim=%d, via ffmpeg)",
+                    "decoded frame resolution (into Python/MoveNet): %dx%d "
+                    "(ffmpeg already downscaled from source %dx%d; max_dim=%d)",
                     fw, fh, dw, dh, max_dim,
                 )
             ts_ms = ts_base + int(d.kept * 1000.0 / eff)
@@ -446,6 +528,15 @@ def _decode_ffmpeg(video_path, backend, *, target_fps, max_dim, max_frames, ts_b
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             proc.kill()
+    # Decode confirmation: resolution Python received, frame count, decode time and
+    # throughput. decode_s is the wall time blocked on ffmpeg producing these frames.
+    thr = (d.kept / d.decode_s) if d.decode_s > 0 else 0.0
+    logger.info(
+        "ffmpeg decode done: %d frames @ %dx%d in %.1fs (%.0fms/frame, %.1f frames/s); "
+        "Python decoded 0 full-res frames (all decode+scale in ffmpeg)",
+        d.kept, d.out_w, d.out_h, d.decode_s,
+        (d.decode_s / d.kept * 1000.0) if d.kept else 0.0, thr,
+    )
     if d.kept == 0:
         raise RuntimeError("ffmpeg produced no frames")
     return d
@@ -571,6 +662,8 @@ def run_pose(
     running_mode: str = "video",
     num_threads: int = 0,
     pose_backend: str = "mediapipe",
+    mediapipe_model_path: str | None = None,
+    ffmpeg_fast_decode: bool = True,
     timings: dict[str, float] | None = None,
 ) -> PoseResult:
     """Estimate pose over a clip, temporally downsampled and spatially downscaled.
@@ -588,28 +681,28 @@ def run_pose(
     """
     global _POSE_WARM
     cold_start = not _POSE_WARM
-    backend_name = pose_backend.lower()
+    requested_backend = pose_backend.lower()
+    backend_name = requested_backend
 
     # Apply the thread hint before MediaPipe/TFLite import (its only chance to matter).
     configure_inference_threads(num_threads)
 
-    if not Path(model_path).exists():
-        raise FileNotFoundError(
-            f"Pose model not found at {model_path} (backend={backend_name}). "
-            "See backend/app/services/pose/models/README.md."
-        )
-
     _t = time.perf_counter
     image_mode = running_mode.lower() == "image"
-    # The cached backend is bound to model+mode+backend, so key on all three.
-    cache_key = f"{backend_name}|{model_path}|{running_mode.lower()}"
 
     def make_backend():
+        # Reads backend_name/model_path at CALL time so the runtime fallback below can
+        # switch them and rebuild. Any init failure raises -> caller decides fallback.
         if backend_name == "movenet":
             from app.services.pose.movenet import MoveNetBackend
             return MoveNetBackend(model_path, num_threads=num_threads)
-        # MediaPipe (default). Imported here so cold-start import cost is counted and
-        # MoveNet-only deployments don't need MediaPipe.
+        # MediaPipe. Imported here so cold-start import cost is counted and MoveNet-only
+        # deployments don't need MediaPipe.
+        if not Path(model_path).exists():
+            raise FileNotFoundError(
+                f"MediaPipe model not found at {model_path}. See "
+                "backend/app/services/pose/models/README.md."
+            )
         import mediapipe as mp
         from mediapipe.tasks import python as mp_python
         from mediapipe.tasks.python import vision as mp_vision
@@ -629,8 +722,26 @@ def run_pose(
         )
         return _MediaPipeBackend(mp_vision.PoseLandmarker.create_from_options(options), mp, image_mode)
 
+    # The cached backend is bound to model+mode+backend, so key on all three.
+    cache_key = f"{backend_name}|{model_path}|{running_mode.lower()}"
     _init0 = _t()
-    backend, ts_base, reused = _acquire_landmarker(cache_key, make_backend, reuse_model)
+    try:
+        backend, ts_base, reused = _acquire_landmarker(cache_key, make_backend, reuse_model)
+    except Exception as exc:  # noqa: BLE001
+        # Keep MediaPipe as a runtime fallback: if MoveNet can't initialise (model
+        # missing, no LiteRT/TFLite runtime, bad load), switch to MediaPipe so the
+        # analysis still runs rather than failing the request.
+        if backend_name == "movenet" and mediapipe_model_path:
+            logger.warning(
+                "MoveNet backend failed to initialise (%s: %s) — falling back to MediaPipe",
+                type(exc).__name__, exc,
+            )
+            backend_name = "mediapipe"
+            model_path = mediapipe_model_path
+            cache_key = f"{backend_name}|{model_path}|{running_mode.lower()}"
+            backend, ts_base, reused = _acquire_landmarker(cache_key, make_backend, reuse_model)
+        else:
+            raise
     _init_s = _t() - _init0
 
     # Surface a silent MediaPipe model fallback (only meaningful for that backend).
@@ -643,18 +754,21 @@ def run_pose(
             model_complexity, _expected, Path(model_path).name, _expected, _expected,
         )
 
+    fell_back = backend_name != requested_backend
     logger.info(
-        "pose config: backend=%s running_mode=%s (tracking %s) num_threads=%s cpu_count=%d "
-        "model=%s",
-        backend_name, "IMAGE" if image_mode else "VIDEO",
+        "pose config: backend=%s (requested=%s%s) running_mode=%s (tracking %s) "
+        "num_threads=%s cpu_count=%d model=%s",
+        backend_name, requested_backend,
+        " -> FELL BACK" if fell_back else "",
+        "IMAGE" if image_mode else "VIDEO",
         "off" if (image_mode or backend_name == "movenet") else "on",
         num_threads or "default", multiprocessing.cpu_count(), Path(model_path).name,
     )
     if reused:
-        logger.info("pose model: reused cached %s backend (no build this analysis)", backend_name)
+        logger.info("pose backend: reused cached %s backend (initialised earlier, OK)", backend_name)
     else:
         logger.info(
-            "pose model: built %s backend in %.0fms (%s)", backend_name, _init_s * 1000,
+            "pose backend: %s initialised OK in %.0fms (%s)", backend_name, _init_s * 1000,
             "cold start — first analysis in this process" if cold_start else "new worker thread / first use",
         )
 
@@ -674,6 +788,7 @@ def run_pose(
                 d = _decode_ffmpeg(
                     video_path, backend, ts_base=ts_base,
                     target_fps=target_fps, max_dim=max_dim, max_frames=max_frames,
+                    fast_decode=ffmpeg_fast_decode,
                 )
                 used = "ffmpeg"
             except Exception as exc:  # noqa: BLE001 — any ffmpeg failure => safe fallback

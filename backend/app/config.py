@@ -66,6 +66,11 @@ class Settings(BaseSettings):
     # frame in Python) with automatic fallback to OpenCV when ffmpeg isn't on PATH.
     # Set "cv2" to force the OpenCV decoder.
     pose_decoder: str = "ffmpeg"
+    # Fast ffmpeg decode: skip the H.264 in-loop deblocking filter and use a faster
+    # downscale during preprocessing. ~10-20% cheaper decode (the dominant cost); the
+    # tiny quality loss is irrelevant after downscaling to <=max_dim for pose. Set
+    # False for bit-faithful decoding.
+    pose_ffmpeg_fast_decode: bool = True
     # Reuse one PoseLandmarker per worker thread across requests instead of building
     # a fresh graph every analysis (saves the ~1-2s init). Set False to force a fresh
     # landmarker per analysis (the previous behaviour).
@@ -79,10 +84,13 @@ class Settings(BaseSettings):
     # be ignored by XNNPACK — benchmark to confirm it does anything on your host.
     # (The MoveNet/TFLite backend DOES honour this directly.)
     pose_num_threads: int = 0
-    # Pose detection backend: "mediapipe" (33 landmarks, default) or "movenet"
-    # (MoveNet Lightning TFLite, 17 keypoints adapted to the 33-slot layout — faster,
-    # but no feet/hands, so a few foot/hand-based checks won't fire). Opt-in.
-    pose_backend: str = "mediapipe"
+    # Pose detection backend:
+    #   "auto"      -> use MoveNet if its model is present, else MediaPipe (default)
+    #   "movenet"   -> MoveNet Lightning TFLite (17 keypoints adapted to the 33-slot
+    #                  layout — faster, but no feet/hands so a few checks won't fire);
+    #                  falls back to MediaPipe at runtime if it can't initialise
+    #   "mediapipe" -> always MediaPipe (33 landmarks)
+    pose_backend: str = "auto"
     # MoveNet SinglePose Lightning .tflite model (used only when pose_backend="movenet").
     movenet_model_path: Path = Path(__file__).parent / "services" / "pose" / "models" / "movenet_lightning.tflite"
 
@@ -140,10 +148,19 @@ class Settings(BaseSettings):
         legacy = self.pose_models_dir / "pose_landmarker.task"
         return str(legacy if legacy.exists() else candidate)
 
+    def resolve_backend(self) -> str:
+        """Resolve the configured backend to a concrete one. "auto" prefers MoveNet
+        when its model file is present (final init/runtime fallback still happens in
+        run_pose), otherwise MediaPipe."""
+        b = self.pose_backend.lower()
+        if b == "auto":
+            return "movenet" if Path(self.movenet_model_path).exists() else "mediapipe"
+        return b
+
     def active_pose_model_file(self) -> str:
-        """Model path for the *selected* backend: the MoveNet .tflite when
-        pose_backend='movenet', otherwise the MediaPipe .task."""
-        if self.pose_backend.lower() == "movenet":
+        """Model path for the *resolved* backend: the MoveNet .tflite when MoveNet is
+        selected, otherwise the MediaPipe .task."""
+        if self.resolve_backend() == "movenet":
             return str(self.movenet_model_path)
         return self.pose_model_file()
 
