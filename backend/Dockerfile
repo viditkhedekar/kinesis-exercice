@@ -47,13 +47,14 @@ RUN set -eu; cd app/services/pose/models; ls -l *.task; \
     done; echo "pose models verified OK"
 
 # MoveNet SinglePose Lightning (int8 TFLite) for the optional "movenet" backend.
-# NOTE: verify this URL is current for your build environment; the backend also works
-# if you drop your own movenet_lightning.tflite here.
-ARG MOVENET_URL=https://storage.googleapis.com/tfhub-lite-models/google/lite-model/movenet/singlepose/lightning/tflite/int8/4.tflite
-RUN curl -fL -o app/services/pose/models/movenet_lightning.tflite "${MOVENET_URL}" \
-    && sz=$(wc -c < app/services/pose/models/movenet_lightning.tflite) \
-    && [ "$sz" -gt 500000 ] || { echo "FATAL: movenet model too small ($sz) — download failed" >&2; exit 1; } \
-    && echo "movenet model verified OK ($sz bytes)"
+# The former tfhub-lite-models GCS download URLs now return HTTP 403, so the model is
+# committed to the repo and copied into the image by `COPY . .` above. We only verify
+# it here (present + plausibly sized), failing the build clearly if it's missing.
+RUN f=app/services/pose/models/movenet_lightning.tflite; \
+    [ -s "$f" ] || { echo "FATAL: movenet model missing at $f (expected committed in repo)" >&2; exit 1; }; \
+    sz=$(wc -c < "$f"); \
+    [ "$sz" -gt 500000 ] || { echo "FATAL: movenet model too small ($sz bytes)" >&2; exit 1; }; \
+    echo "movenet model present OK ($sz bytes)"
 
 ENV PYTHONUNBUFFERED=1
 
