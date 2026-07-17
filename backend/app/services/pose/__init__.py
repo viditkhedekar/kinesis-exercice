@@ -64,6 +64,34 @@ def is_pose_warm() -> bool:
     return _POSE_WARM
 
 
+def log_model_inventory(models_dir, resolved_path, complexity) -> None:
+    """Log which pose-model bundles exist on disk (name + size), which one the
+    configured complexity resolves to, and whether that's a silent fallback to a
+    different model. Called at startup so the deployed logs immediately reveal
+    whether the intended (lite) model is actually present in the image."""
+    p = Path(models_dir)
+    files = sorted(p.glob("*.task")) if p.exists() else []
+    listing = ", ".join(f"{f.name}={f.stat().st_size // 1024}KB" for f in files) or "(none)"
+    logger.info("pose model inventory: dir=%s | files=[%s] | cpu_count=%d",
+                p, listing, multiprocessing.cpu_count())
+
+    rp = Path(resolved_path)
+    if rp.exists():
+        logger.info("pose model resolved: complexity=%s -> %s (%dKB)",
+                    complexity, rp, rp.stat().st_size // 1024)
+    else:
+        logger.warning("pose model resolved: complexity=%s -> %s (FILE MISSING)", complexity, rp)
+
+    expected = {0: "lite", 1: "full", 2: "heavy"}.get(complexity)
+    if expected and expected not in rp.name.lower():
+        logger.warning(
+            "SILENT FALLBACK DETECTED: complexity=%s expects the '%s' model but resolved "
+            "file is '%s' — MediaPipe is running a DIFFERENT (likely heavier/slower) model. "
+            "Ensure pose_landmarker_%s.task is present in the image (rebuild so the "
+            "Dockerfile download runs).", complexity, expected, rp.name, expected,
+        )
+
+
 @dataclass
 class _Decoded:
     """Result of walking a clip: the per-frame landmarks plus stage timings and
@@ -238,6 +266,22 @@ def _log_pose_diagnostics(
     )
 
 
+def _fit_max_dim(rgb: np.ndarray, max_dim: int) -> tuple[np.ndarray, int, int]:
+    """Hard guarantee that the frame's longest side is <= ``max_dim`` right before it
+    enters MediaPipe (a safety net independent of the decoder). Preserves aspect,
+    works for portrait and landscape. Returns ``(rgb, width, height)`` of the array
+    actually handed to MediaPipe."""
+    h, w = rgb.shape[:2]
+    if max_dim and max(h, w) > max_dim:
+        import cv2
+        sf = max_dim / max(h, w)
+        rgb = cv2.resize(
+            rgb, (max(2, round(w * sf)), max(2, round(h * sf))), interpolation=cv2.INTER_AREA
+        )
+        h, w = rgb.shape[:2]
+    return rgb, w, h
+
+
 def _read_exact(stream, n: int) -> bytes:
     """Read exactly ``n`` bytes from a pipe (a single ``read`` can return short)."""
     buf = bytearray()
@@ -296,6 +340,13 @@ def _decode_ffmpeg(video_path, landmarker, *, target_fps, max_dim, max_frames, t
             d.grabbed += 1
             _e0 = _t()
             rgb = np.frombuffer(buf, dtype=np.uint8).reshape(out_h, out_w, 3)
+            rgb, fw, fh = _fit_max_dim(rgb, max_dim)  # safety net; ffmpeg already scaled
+            if d.kept == 0:
+                d.out_w, d.out_h = fw, fh
+                logger.info(
+                    "MediaPipe input frame resolution: %dx%d (source %dx%d, max_dim=%d, via ffmpeg)",
+                    fw, fh, dw, dh, max_dim,
+                )
             image = mp.Image(image_format=mp.ImageFormat.SRGB, data=np.ascontiguousarray(rgb))
             ts_ms = ts_base + int(d.kept * 1000.0 / eff)
             d.extract_s += _t() - _e0
@@ -369,6 +420,13 @@ def _decode_cv2(video_path, landmarker, *, target_fps, max_dim, max_frames, ts_b
                 if not d.out_w:
                     d.out_h, d.out_w = frame_bgr.shape[:2]
                 frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+                frame_rgb, fw, fh = _fit_max_dim(frame_rgb, max_dim)  # safety net
+                if d.kept == 0:
+                    d.out_w, d.out_h = fw, fh
+                    logger.info(
+                        "MediaPipe input frame resolution: %dx%d (source %dx%d, max_dim=%d, via opencv)",
+                        fw, fh, d.width, d.height, max_dim,
+                    )
                 image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
                 ts_ms = ts_base + int(d.kept * 1000.0 / eff)
                 d.extract_s += _t() - _e0
@@ -497,8 +555,9 @@ def run_pose(
     logger.info(
         "pose config: running_mode=VIDEO (static_image_mode=False, tracking on) "
         "delegate=CPU num_poses=1 detect_conf=0.50 track_conf=0.50 segmentation=off "
-        "model=%s complexity=%s",
-        Path(model_path).name, _complexity_of(model_path, model_complexity),
+        "cpu_count=%d model_complexity=%s model_path=%s",
+        multiprocessing.cpu_count(), _complexity_of(model_path, model_complexity),
+        model_path,
     )
     if reused:
         logger.info("pose model: reused cached landmarker (no graph build this analysis)")

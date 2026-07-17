@@ -55,7 +55,7 @@ class Settings(BaseSettings):
     # for rep detection and joint-angle measurement.
     # ~8 fps keeps enough temporal resolution for rep counting and technique while
     # minimising decoded/processed frames.
-    pose_target_fps: float = 8.0      # sample the source down to ~this fps
+    pose_target_fps: float = 5.0      # sample the source down to ~this fps
     # Longest side is capped to this before inference. 640 => ~640x360 for 16:9.
     # MediaPipe rescales internally to ~256px, so this is lossless for the analysis
     # while cutting decode/preprocess work. Never modifies the original upload.

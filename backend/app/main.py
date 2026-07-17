@@ -44,6 +44,12 @@ def seed_exercises() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     configure_logging()  # idempotent; also covers non-uvicorn entrypoints
+    # Log the pose-model inventory once at boot so the deployed logs immediately show
+    # which model files shipped in the image and whether lite is actually resolved.
+    from app.services.pose import log_model_inventory
+
+    s = get_settings()
+    log_model_inventory(s.pose_models_dir, s.pose_model_file(), s.pose_model_complexity)
     seed_exercises()
     yield
 

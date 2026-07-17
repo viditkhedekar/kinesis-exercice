@@ -26,13 +26,23 @@ COPY . .
 # 2=heavy) can be switched without a rebuild, and scripts/benchmark_pose.py can
 # compare them. The runtime default is "full" (complexity 1).
 ARG MP_BASE=https://storage.googleapis.com/mediapipe-models/pose_landmarker
+# -f makes curl FAIL (non-zero) on an HTTP error instead of writing the error page
+# into the .task file; -L follows redirects. The verification step then fails the
+# build loudly if any model is missing or implausibly small, so a broken download
+# can never silently degrade runtime into the wrong (heavier) model.
 RUN mkdir -p app/services/pose/models && \
-    curl -L -o app/services/pose/models/pose_landmarker_lite.task \
+    curl -fL -o app/services/pose/models/pose_landmarker_lite.task \
       ${MP_BASE}/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task && \
-    curl -L -o app/services/pose/models/pose_landmarker_full.task \
+    curl -fL -o app/services/pose/models/pose_landmarker_full.task \
       ${MP_BASE}/pose_landmarker_full/float16/latest/pose_landmarker_full.task && \
-    curl -L -o app/services/pose/models/pose_landmarker_heavy.task \
+    curl -fL -o app/services/pose/models/pose_landmarker_heavy.task \
       ${MP_BASE}/pose_landmarker_heavy/float16/latest/pose_landmarker_heavy.task
+RUN set -eu; cd app/services/pose/models; ls -l *.task; \
+    for f in pose_landmarker_lite.task pose_landmarker_full.task pose_landmarker_heavy.task; do \
+      test -s "$f" || { echo "FATAL: model missing/empty: $f" >&2; exit 1; }; \
+      sz=$(wc -c < "$f"); \
+      [ "$sz" -gt 1000000 ] || { echo "FATAL: model $f too small ($sz bytes) — download failed" >&2; exit 1; }; \
+    done; echo "pose models verified OK"
 
 ENV PYTHONUNBUFFERED=1
 
