@@ -194,6 +194,8 @@ def run_pipeline(session_id: int, timer: StageTimer | None = None) -> None:
             decoder=settings.pose_decoder,
             model_complexity=settings.pose_model_complexity,
             reuse_model=settings.pose_reuse_model,
+            running_mode=settings.pose_running_mode,
+            num_threads=settings.pose_num_threads,
             timings=pose_timings,
         )
         if timer is not None:

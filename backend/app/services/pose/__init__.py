@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import logging
 import multiprocessing
+import os
 import platform
 import shutil
 import subprocess
@@ -64,6 +65,58 @@ def is_pose_warm() -> bool:
     return _POSE_WARM
 
 
+# Env vars set (best-effort) to steer CPU inference thread counts. The MediaPipe
+# Tasks API does not expose an inference-thread knob, so we can only nudge the
+# underlying math libraries via the environment BEFORE MediaPipe/TFLite load.
+# XNNPACK (MediaPipe's default float CPU backend) sizes its own pthreadpool and may
+# ignore these — the benchmark is what tells us whether they actually move the needle.
+_THREAD_ENV_VARS = (
+    "OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+    "VECLIB_MAXIMUM_THREADS", "NUMEXPR_NUM_THREADS", "TFLITE_NUM_THREADS",
+)
+
+
+def configure_inference_threads(num_threads: int) -> None:
+    """Best-effort: pin CPU math-library thread counts via env vars. Must run BEFORE
+    MediaPipe/TFLite are imported to have any chance of taking effect. ``0`` leaves
+    the environment untouched (library defaults)."""
+    if not num_threads or num_threads < 1:
+        return
+    for var in _THREAD_ENV_VARS:
+        os.environ.setdefault(var, str(num_threads))
+    logger.info("configured inference thread env: %d (%s)", num_threads,
+                ", ".join(f"{v}={os.environ.get(v)}" for v in _THREAD_ENV_VARS))
+
+
+def cpu_budget() -> dict:
+    """The process's *real* CPU budget — not just ``cpu_count()`` which reports the
+    host cores and hides container CPU limits. Reads scheduler affinity and the
+    cgroup CFS quota (v2 then v1) so the logs reveal a fractional-vCPU cap."""
+    info: dict = {"cpu_count": multiprocessing.cpu_count()}
+    try:
+        info["affinity"] = len(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        info["affinity"] = None
+    quota = None
+    try:  # cgroup v2
+        with open("/sys/fs/cgroup/cpu.max") as fh:
+            q, p = fh.read().split()
+            if q != "max":
+                quota = int(q) / int(p)
+    except OSError:
+        try:  # cgroup v1
+            with open("/sys/fs/cgroup/cpu/cpu.cfs_quota_us") as fh:
+                q = int(fh.read())
+            with open("/sys/fs/cgroup/cpu/cpu.cfs_period_us") as fh:
+                p = int(fh.read())
+            if q > 0 and p > 0:
+                quota = q / p
+        except OSError:
+            pass
+    info["cgroup_quota_cpus"] = round(quota, 3) if quota is not None else None
+    return info
+
+
 def log_model_inventory(models_dir, resolved_path, complexity) -> None:
     """Log which pose-model bundles exist on disk (name + size), which one the
     configured complexity resolves to, and whether that's a silent fallback to a
@@ -72,8 +125,15 @@ def log_model_inventory(models_dir, resolved_path, complexity) -> None:
     p = Path(models_dir)
     files = sorted(p.glob("*.task")) if p.exists() else []
     listing = ", ".join(f"{f.name}={f.stat().st_size // 1024}KB" for f in files) or "(none)"
-    logger.info("pose model inventory: dir=%s | files=[%s] | cpu_count=%d",
-                p, listing, multiprocessing.cpu_count())
+    b = cpu_budget()
+    logger.info(
+        "pose model inventory: dir=%s | files=[%s]", p, listing,
+    )
+    logger.info(
+        "cpu budget: cpu_count=%s affinity=%s cgroup_quota_cpus=%s "
+        "(if quota << cpu_count, MediaPipe threads are contending for a fraction of a core)",
+        b["cpu_count"], b["affinity"], b["cgroup_quota_cpus"],
+    )
 
     rp = Path(resolved_path)
     if rp.exists():
@@ -303,7 +363,7 @@ def _extract(result) -> np.ndarray:
     return out
 
 
-def _decode_ffmpeg(video_path, landmarker, *, target_fps, max_dim, max_frames, ts_base=0) -> _Decoded:
+def _decode_ffmpeg(video_path, landmarker, *, target_fps, max_dim, max_frames, ts_base=0, image_mode=False) -> _Decoded:
     """Stream decoded+downscaled+decimated RGB frames from a single ffmpeg process
     straight into MediaPipe, one frame at a time (never holding the whole clip)."""
     import mediapipe as mp
@@ -351,7 +411,7 @@ def _decode_ffmpeg(video_path, landmarker, *, target_fps, max_dim, max_frames, t
             ts_ms = ts_base + int(d.kept * 1000.0 / eff)
             d.extract_s += _t() - _e0
             _i0 = _t()
-            result = landmarker.detect_for_video(image, ts_ms)
+            result = landmarker.detect(image) if image_mode else landmarker.detect_for_video(image, ts_ms)
             d.infer_s += _t() - _i0
             d.frames.append(_extract(result))
             d.kept += 1
@@ -371,7 +431,7 @@ def _decode_ffmpeg(video_path, landmarker, *, target_fps, max_dim, max_frames, t
     return d
 
 
-def _decode_cv2(video_path, landmarker, *, target_fps, max_dim, max_frames, ts_base=0) -> _Decoded:
+def _decode_cv2(video_path, landmarker, *, target_fps, max_dim, max_frames, ts_base=0, image_mode=False) -> _Decoded:
     """OpenCV fallback: decode every source frame (``grab``), run inference on every
     ``step``-th one. Functionally identical output; kept for hosts without ffmpeg."""
     import cv2
@@ -431,7 +491,7 @@ def _decode_cv2(video_path, landmarker, *, target_fps, max_dim, max_frames, ts_b
                 ts_ms = ts_base + int(d.kept * 1000.0 / eff)
                 d.extract_s += _t() - _e0
                 _i0 = _t()
-                result = landmarker.detect_for_video(image, ts_ms)
+                result = landmarker.detect(image) if image_mode else landmarker.detect_for_video(image, ts_ms)
                 d.infer_s += _t() - _i0
                 d.frames.append(_extract(result))
                 d.kept += 1
@@ -491,6 +551,8 @@ def run_pose(
     decoder: str = "auto",
     model_complexity: int | None = None,
     reuse_model: bool = True,
+    running_mode: str = "video",
+    num_threads: int = 0,
     timings: dict[str, float] | None = None,
 ) -> PoseResult:
     """Estimate pose over a clip, temporally downsampled and spatially downscaled.
@@ -500,10 +562,14 @@ def run_pose(
     ``fps`` is the *effective* sampled fps so every downstream frame index/timestamp
     (rep windows, joint-angle series, overlay) maps back to real time as ``frame/fps``.
     ``decoder``: "auto"/"ffmpeg" prefer the ffmpeg pipe (fall back to OpenCV), "cv2"
-    forces OpenCV.
+    forces OpenCV. ``running_mode``: "video" (tracking) or "image" (detect per frame).
+    ``num_threads``: best-effort CPU inference thread hint (see configure_inference_threads).
     """
     global _POSE_WARM
     cold_start = not _POSE_WARM
+
+    # Apply the thread hint before MediaPipe/TFLite import (its only chance to matter).
+    configure_inference_threads(num_threads)
 
     import mediapipe as mp  # noqa: F401 (imported so cold-start import cost is counted)
     from mediapipe.tasks import python as mp_python
@@ -516,18 +582,23 @@ def run_pose(
         )
 
     _t = time.perf_counter
+    image_mode = running_mode.lower() == "image"
+    mp_mode = mp_vision.RunningMode.IMAGE if image_mode else mp_vision.RunningMode.VIDEO
+    # A landmarker is bound to its running mode, so key the per-thread cache by both.
+    cache_key = f"{model_path}|{running_mode.lower()}"
 
     def make_landmarker():
         # Pin the CPU delegate (headless, no GPU/display). VIDEO running mode
         # (== static_image_mode False) carries tracking between frames so most frames
-        # are a cheap track, not a full detection. Segmentation masks are explicitly
-        # disabled — we never use them and they add real per-frame compute.
+        # are a cheap track, not a full detection; IMAGE mode runs a full detection
+        # every frame (no tracking). Segmentation masks are explicitly disabled — we
+        # never use them and they add real per-frame compute.
         options = mp_vision.PoseLandmarkerOptions(
             base_options=mp_python.BaseOptions(
                 model_asset_path=model_path,
                 delegate=mp_python.BaseOptions.Delegate.CPU,
             ),
-            running_mode=mp_vision.RunningMode.VIDEO,
+            running_mode=mp_mode,
             num_poses=1,
             min_pose_detection_confidence=0.5,
             min_pose_presence_confidence=0.5,
@@ -537,7 +608,7 @@ def run_pose(
         return mp_vision.PoseLandmarker.create_from_options(options)
 
     _init0 = _t()
-    landmarker, ts_base, reused = _acquire_landmarker(model_path, make_landmarker, reuse_model)
+    landmarker, ts_base, reused = _acquire_landmarker(cache_key, make_landmarker, reuse_model)
     _init_s = _t() - _init0
 
     # Surface a silent model fallback: if the requested complexity's variant file is
@@ -553,11 +624,12 @@ def run_pose(
         )
 
     logger.info(
-        "pose config: running_mode=VIDEO (static_image_mode=False, tracking on) "
-        "delegate=CPU num_poses=1 detect_conf=0.50 track_conf=0.50 segmentation=off "
-        "cpu_count=%d model_complexity=%s model_path=%s",
-        multiprocessing.cpu_count(), _complexity_of(model_path, model_complexity),
-        model_path,
+        "pose config: running_mode=%s (tracking %s) delegate=CPU num_poses=1 "
+        "detect_conf=0.50 track_conf=0.50 segmentation=off num_threads=%s cpu_count=%d "
+        "model_complexity=%s model_path=%s",
+        "IMAGE" if image_mode else "VIDEO", "off" if image_mode else "on",
+        num_threads or "default", multiprocessing.cpu_count(),
+        _complexity_of(model_path, model_complexity), model_path,
     )
     if reused:
         logger.info("pose model: reused cached landmarker (no graph build this analysis)")
@@ -581,7 +653,7 @@ def run_pose(
         if prefer_ffmpeg and _ffmpeg_available():
             try:
                 d = _decode_ffmpeg(
-                    video_path, landmarker, ts_base=ts_base,
+                    video_path, landmarker, ts_base=ts_base, image_mode=image_mode,
                     target_fps=target_fps, max_dim=max_dim, max_frames=max_frames,
                 )
                 used = "ffmpeg"
@@ -595,30 +667,31 @@ def run_pose(
                 landmarker.close()
                 landmarker = make_landmarker()
                 if reuse_model:
-                    _cache_landmarker(model_path, landmarker)
+                    _cache_landmarker(cache_key, landmarker)
                 ts_base = 0
                 d = _decode_cv2(
-                    video_path, landmarker, ts_base=ts_base,
+                    video_path, landmarker, ts_base=ts_base, image_mode=image_mode,
                     target_fps=target_fps, max_dim=max_dim, max_frames=max_frames,
                 )
         else:
             if prefer_ffmpeg:
                 logger.info("ffmpeg/ffprobe not on PATH; using OpenCV decoder")
             d = _decode_cv2(
-                video_path, landmarker, ts_base=ts_base,
+                video_path, landmarker, ts_base=ts_base, image_mode=image_mode,
                 target_fps=target_fps, max_dim=max_dim, max_frames=max_frames,
             )
     except Exception:
         # A failed analysis may have left the cached instance mid-stream; drop it so
         # the next request rebuilds cleanly. (When not reusing, just close it.)
         if reuse_model:
-            _evict_landmarker(model_path)
+            _evict_landmarker(cache_key)
         landmarker.close()
         raise
 
     if reuse_model:
+        # IMAGE mode is stateless per frame; only VIDEO needs monotonic timestamps.
         last_ts = ts_base + int(max(0, d.kept - 1) * 1000.0 / d.effective_fps) if d.effective_fps else ts_base
-        _advance_ts(model_path, last_ts)
+        _advance_ts(cache_key, last_ts)
     else:
         landmarker.close()
 
@@ -637,10 +710,11 @@ def run_pose(
     dec_ms = (d.decode_s / d.grabbed * 1000.0) if d.grabbed else 0.0
     inf_ms = (d.infer_s / d.kept * 1000.0) if d.kept else 0.0
     logger.info(
-        "pose timing: mediapipe_input=%dx%d model_complexity=%s | frame_decode %.1fs "
-        "(%d frames @ %.0fms) | frame_extraction %.1fs | pose_estimation %.1fs "
-        "(%d frames @ %.0fms/frame avg)",
-        d.out_w, d.out_h, _complexity_of(model_path, model_complexity),
+        "pose timing: running_mode=%s num_threads=%s mediapipe_input=%dx%d "
+        "model_complexity=%s | frame_decode %.1fs (%d frames @ %.0fms) | "
+        "frame_extraction %.1fs | pose_estimation %.1fs (%d frames @ %.0fms/frame avg)",
+        "IMAGE" if image_mode else "VIDEO", num_threads or "default", d.out_w, d.out_h,
+        _complexity_of(model_path, model_complexity),
         d.decode_s, d.grabbed, dec_ms, d.extract_s, d.infer_s, d.kept, inf_ms,
     )
 

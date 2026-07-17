@@ -70,6 +70,14 @@ class Settings(BaseSettings):
     # a fresh graph every analysis (saves the ~1-2s init). Set False to force a fresh
     # landmarker per analysis (the previous behaviour).
     pose_reuse_model: bool = True
+    # PoseLandmarker running mode: "video" (tracking between frames, default) or
+    # "image" (independent full detection per frame, no tracking). Benchmark both
+    # with scripts/benchmark_pose.py before changing.
+    pose_running_mode: str = "video"
+    # Best-effort CPU inference thread hint (0 = library default). The MediaPipe Tasks
+    # API has no thread knob, so this only sets math-lib env vars before load and may
+    # be ignored by XNNPACK — benchmark to confirm it does anything on your host.
+    pose_num_threads: int = 0
 
     # --- Auth ---
     auth_secret: str = "dev-insecure-change-me"   # HMAC signing key for session tokens
