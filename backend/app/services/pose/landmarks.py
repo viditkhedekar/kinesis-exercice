@@ -29,6 +29,27 @@ LANDMARK_INDEX: dict[str, int] = {
     "left_foot_index": 31, "right_foot_index": 32,
 }
 
+# Landmarks used to judge "is a person actually in frame?".
+#
+# Deliberately restricted to torso + limb joints that EVERY pose backend can
+# produce. MoveNet (COCO-17) has no mouth/eye-detail/finger/foot landmarks, so
+# those slots are permanently visibility 0 under that backend — averaging
+# presence over all 33 slots caps the score at 17/33 = 0.52 even for a flawless
+# detection, which made a good clip look like an empty one. Judging presence on
+# the landmarks a backend can actually emit keeps the metric backend-agnostic.
+#
+# These are also the landmarks that matter for framing: eyes and fingertips
+# never told us whether the body was in shot.
+CORE_PRESENCE_LANDMARKS: tuple[int, ...] = (
+    0,          # nose
+    11, 12,     # shoulders
+    13, 14,     # elbows
+    15, 16,     # wrists
+    23, 24,     # hips
+    25, 26,     # knees
+    27, 28,     # ankles
+)
+
 # Generic joint name -> (left index, right index)
 SIDED: dict[str, tuple[int, int]] = {
     "shoulder": (11, 12),

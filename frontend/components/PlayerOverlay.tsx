@@ -2,7 +2,7 @@
 
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { videoUrl } from "@/lib/api";
-import { frameForTime, renderOverlay } from "@/lib/poseOverlay";
+import { frameFloatForTime, renderOverlay } from "@/lib/poseOverlay";
 import type { Ghost, Landmarks, Rep, RepFault } from "@/lib/types";
 
 export interface PlayerHandle {
@@ -69,18 +69,21 @@ const PlayerOverlay = forwardRef<PlayerHandle, Props>(function PlayerOverlay(
       const canvas = canvasRef.current;
       const ctx = canvas?.getContext("2d");
       if (canvas && ctx) {
-        let frame: number;
+        // Fractional frame drives interpolation (continuous tracking); the rounded
+        // integer drives the per-frame onFrame callback / rep-window UI.
+        let frameFloat: number;
         if (hasVideo) {
           const video = videoRef.current;
-          frame = video ? frameForTime(video.currentTime, landmarks.fps, totalFrames) : 0;
+          frameFloat = video ? frameFloatForTime(video.currentTime, landmarks.fps, totalFrames) : 0;
         } else {
           if (playing && totalFrames > 0) {
             frameRef.current += ((now - last) / 1000) * landmarks.fps;
             if (frameRef.current >= totalFrames) frameRef.current = 0; // loop
           }
-          frame = Math.max(0, Math.min(totalFrames - 1, Math.floor(frameRef.current)));
+          frameFloat = Math.max(0, Math.min(Math.max(0, totalFrames - 1), frameRef.current));
         }
-        renderOverlay(ctx, canvas.width, canvas.height, landmarks, frame, ghost, reps, showGhost, faults);
+        renderOverlay(ctx, canvas.width, canvas.height, landmarks, frameFloat, ghost, reps, showGhost, faults);
+        const frame = Math.max(0, Math.min(Math.max(0, totalFrames - 1), Math.round(frameFloat)));
         if (frame !== lastFrameRef.current) {
           lastFrameRef.current = frame;
           onFrame?.(frame);

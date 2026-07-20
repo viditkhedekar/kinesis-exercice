@@ -6,6 +6,28 @@ export function frameForTime(time: number, fps: number, total: number): number {
   return Math.max(0, Math.min(total - 1, Math.round(time * fps)));
 }
 
+/** Fractional frame position for a video time — used to interpolate the skeleton
+ * between landmark samples so it tracks the person continuously instead of snapping
+ * to the ~5fps grid (which reads as the skeleton lagging the person). */
+export function frameFloatForTime(time: number, fps: number, total: number): number {
+  if (total <= 0) return 0;
+  return Math.max(0, Math.min(total - 1, time * fps));
+}
+
+/** Linearly interpolate two landmark frames (each `[x, y, vis]` per joint). Where a
+ * joint is confidently visible in both, blend position + visibility; where it's
+ * missing on one side, hold the more-confident endpoint so the joint never slides
+ * toward a (0,0) dropout. */
+function lerpLandmarks(a: number[][], b: number[][], t: number): number[][] {
+  return a.map((pa, i) => {
+    const pb = b[i] ?? pa;
+    if (pa[2] >= VIS_THRESHOLD && pb[2] >= VIS_THRESHOLD) {
+      return [pa[0] + (pb[0] - pa[0]) * t, pa[1] + (pb[1] - pa[1]) * t, pa[2] + (pb[2] - pa[2]) * t];
+    }
+    return pa[2] >= pb[2] ? pa : pb;
+  });
+}
+
 interface Rect {
   ox: number;
   oy: number;
@@ -116,7 +138,7 @@ export function renderOverlay(
   w: number,
   h: number,
   landmarks: Landmarks,
-  frame: number,
+  frameFloat: number,
   ghost: Ghost | null,
   reps: Rep[],
   showGhost: boolean,
@@ -124,6 +146,9 @@ export function renderOverlay(
 ) {
   ctx.clearRect(0, 0, w, h);
   const rect = containRect(w, h, landmarks.width, landmarks.height);
+  const total = landmarks.frames.length;
+  // Integer frame drives the discrete window lookups (rep/ghost phase, fault ranges).
+  const frame = Math.max(0, Math.min(Math.max(0, total - 1), Math.round(frameFloat)));
 
   // Ghost first (behind), phase-aligned to the current rep.
   if (showGhost && ghost?.available && ghost.frames.length > 0) {
@@ -135,8 +160,17 @@ export function renderOverlay(
     }
   }
 
-  // Live skeleton, then red-flag the joints affected by any fault active now.
-  const lm = landmarks.frames[frame];
+  // Live skeleton: interpolate between the two bracketing landmark samples so it
+  // tracks the person continuously at display refresh rate rather than snapping to
+  // (and lagging on) the ~5fps sample grid.
+  const f0 = Math.max(0, Math.min(Math.max(0, total - 1), Math.floor(frameFloat)));
+  const f1 = Math.min(Math.max(0, total - 1), f0 + 1);
+  const frac = frameFloat - f0;
+  const a = landmarks.frames[f0];
+  const b = landmarks.frames[f1];
+  // Interpolate only for a genuinely fractional position; an integer frame (e.g. live
+  // camera mode) draws its exact sample, identical to before.
+  const lm = a && b && f1 !== f0 && frac > 0 ? lerpLandmarks(a, b, frac) : (a ?? b);
   if (lm) {
     drawSkeleton(ctx, rect, lm, landmarks.edges, "#22d3ee", 0.95, 4);
     const flagged = highlightedJoints(faults, frame);

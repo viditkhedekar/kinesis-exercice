@@ -143,11 +143,63 @@ def cpu_budget() -> dict:
     return info
 
 
+# Snapshot of the CPU budget taken at boot, so post-analysis logging can diff the
+# cgroup throttling counters against it. At startup these counters are ~0 (the
+# process has barely run), which is exactly why reading them only at boot tells us
+# nothing — the interesting question is how much we were throttled *during* the
+# CPU-bound decode + inference work.
+_startup_cpu_budget: dict | None = None
+
+
+def log_cpu_budget_delta(label: str = "analysis") -> None:
+    """Re-read the CPU budget after CPU-bound work and log the *delta* in throttling
+    counters against the startup snapshot.
+
+    This is the measurement that actually answers "are we being throttled?". The
+    boot-time counters are near-zero by construction; only the delta over an
+    analysis shows what fraction of scheduling periods the kernel capped us in."""
+    now = cpu_budget()
+    start = _startup_cpu_budget
+    t_now = now.get("throttling") or {}
+    t_start = (start or {}).get("throttling") or {}
+
+    if not t_now:
+        logger.info("cpu budget after %s: no cgroup throttling counters available "
+                    "(quota=%s)", label, now.get("cgroup_quota_cpus"))
+        return
+
+    def delta(key: str) -> int:
+        return int(t_now.get(key, 0)) - int(t_start.get(key, 0))
+
+    periods, throttled = delta("nr_periods"), delta("nr_throttled")
+    # v2 reports throttled_usec; v1 reports throttled_time (ns).
+    thr_s = (delta("throttled_usec") / 1e6 if "throttled_usec" in t_now
+             else delta("throttled_time") / 1e9)
+    pct = (100.0 * throttled / periods) if periods else 0.0
+
+    logger.info(
+        "cpu budget after %s: quota=%s cpus | during this run: nr_periods=+%d "
+        "nr_throttled=+%d (%.0f%% of periods) throttled=+%.2fs "
+        "[startup totals: nr_periods=%s nr_throttled=%s]",
+        label, now.get("cgroup_quota_cpus"), periods, throttled, pct, thr_s,
+        t_start.get("nr_periods", 0), t_start.get("nr_throttled", 0),
+    )
+    if periods and pct >= 20.0:
+        logger.warning(
+            "CPU THROTTLED DURING %s: the kernel capped this container in %.0f%% of "
+            "scheduling periods (%.2fs stalled waiting for quota). This is the direct "
+            "cause of slow frame_decode / inference — not the model choice.",
+            label.upper(), pct, thr_s,
+        )
+
+
 def log_cpu_diagnostics(num_threads: int = 0) -> None:
     """Log the container's real CPU budget + a throttling verdict, and the configured
     TFLite inference thread count. Answers 'is this container throttled despite
     reporting N cores?' directly in the deployed logs."""
+    global _startup_cpu_budget
     b = cpu_budget()
+    _startup_cpu_budget = b  # baseline for log_cpu_budget_delta() after each analysis
     quota, cores = b["cgroup_quota_cpus"], b["cpu_count"]
 
     logger.info(
@@ -664,6 +716,13 @@ def run_pose(
     pose_backend: str = "mediapipe",
     mediapipe_model_path: str | None = None,
     ffmpeg_fast_decode: bool = True,
+    smoothing: bool = False,
+    smooth_min_confidence: float = 0.3,
+    smooth_max_jump: float = 0.15,
+    smooth_max_gap_frames: int = 5,
+    smooth_min_cutoff: float = 1.0,
+    smooth_beta: float = 0.5,
+    smooth_d_cutoff: float = 1.0,
     timings: dict[str, float] | None = None,
 ) -> PoseResult:
     """Estimate pose over a clip, temporally downsampled and spatially downscaled.
@@ -677,7 +736,10 @@ def run_pose(
     ``pose_backend``: "mediapipe" (default) or "movenet". Both emit the same 33-slot
     landmark array via a backend adapter, so the analysis pipeline is untouched.
     ``num_threads``: CPU inference thread hint (honoured directly by MoveNet/TFLite;
-    best-effort env-only for MediaPipe).
+    best-effort env-only for MediaPipe). ``smoothing``: run the lightweight
+    post-estimation de-jitter pass (confidence filter + jump rejection + gap
+    interpolation + One Euro smoothing) on the assembled landmark array; pure
+    NumPy, no extra inference cost, timed into ``timings["pose_smoothing"]``.
     """
     global _POSE_WARM
     cold_start = not _POSE_WARM
@@ -858,6 +920,34 @@ def run_pose(
         if d.frames
         else np.full((0, NUM_LANDMARKS, 4), np.nan, dtype=np.float32)
     )
+
+    # Lightweight post-processing to de-jitter the landmark stream. Operates on the
+    # already-assembled array (no model/resolution/fps change), so it adds no
+    # inference cost — only a few ms of NumPy. Timed explicitly to prove that.
+    if smoothing and arr.shape[0] > 1:
+        from app.services.pose.smoothing import smooth_landmarks
+
+        _s0 = _t()
+        arr, sm_stats = smooth_landmarks(
+            arr, d.effective_fps,
+            min_confidence=smooth_min_confidence, max_jump=smooth_max_jump,
+            max_gap_frames=smooth_max_gap_frames, min_cutoff=smooth_min_cutoff,
+            beta=smooth_beta, d_cutoff=smooth_d_cutoff,
+        )
+        _sm_s = _t() - _s0
+        if timings is not None:
+            timings["pose_smoothing"] = _sm_s
+        logger.info(
+            "pose smoothing: %d frames x %d landmarks in %.1fms (%.3fms/frame) | "
+            "low_confidence_dropped=%d jumps_rejected=%d points_interpolated=%d "
+            "(one-euro min_cutoff=%.2f beta=%.2f | max_jump=%.2f max_gap=%d)",
+            sm_stats["frames"], NUM_LANDMARKS, _sm_s * 1000.0,
+            (_sm_s * 1000.0 / sm_stats["frames"]) if sm_stats["frames"] else 0.0,
+            sm_stats["low_confidence"], sm_stats["jumps_rejected"],
+            sm_stats["points_interpolated"], smooth_min_cutoff, smooth_beta,
+            smooth_max_jump, smooth_max_gap_frames,
+        )
+
     duration = len(d.frames) / d.effective_fps if d.effective_fps else 0.0
     return PoseResult(
         landmarks=arr, fps=d.effective_fps, duration=duration,

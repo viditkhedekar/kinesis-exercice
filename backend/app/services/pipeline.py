@@ -9,6 +9,7 @@ analysis is available as soon as the request returns.
 """
 from __future__ import annotations
 
+import logging
 from collections import Counter
 from contextlib import nullcontext
 
@@ -40,12 +41,17 @@ from app.services.feedback import (
     strengths,
 )
 from app.services.insights import generate_insights
-from app.services.pose import PoseResult, is_pose_warm, run_pose, save_landmarks
+from app.services.pose import (
+    PoseResult, is_pose_warm, log_cpu_budget_delta, run_pose, save_landmarks,
+)
+from app.services.pose.landmarks import CORE_PRESENCE_LANDMARKS
 from app.services.progress import upsert_progress
 from app.services.reps import RepWindow, detect_reps
 from app.services.rules import evaluate_session
 from app.services.storage import get_storage
 from app.services.timing import StageTimer
+
+logger = logging.getLogger("kinesis.pipeline")
 
 
 def _timed(timer: StageTimer | None, name: str):
@@ -114,7 +120,13 @@ def _assess_quality(
     if F == 0:
         present_frac = 0.0
     else:
-        vis = landmarks[:, :, 3].astype(float)          # (F, 33) visibility, NaN if undetected
+        # Score presence only over landmarks every backend can emit. MoveNet fills
+        # 17 of the 33 MediaPipe slots and leaves the rest at visibility 0, so
+        # averaging across all 33 would cap a perfect detection at 17/33 = 0.52 and
+        # fire "no_subject" on perfectly good clips.
+        # list(...) makes the fancy-index intent explicit; a bare tuple in this
+        # position also works but reads ambiguously next to the surrounding slices.
+        vis = landmarks[:, list(CORE_PRESENCE_LANDMARKS), 3].astype(float)  # (F, C)
         per_frame = np.nan_to_num(np.nanmean(vis, axis=1), nan=0.0)
         present_frac = float(np.mean(per_frame >= 0.5))
 
@@ -199,6 +211,13 @@ def run_pipeline(session_id: int, timer: StageTimer | None = None) -> None:
             pose_backend=settings.resolve_backend(),
             mediapipe_model_path=settings.pose_model_file(),  # runtime fallback target
             ffmpeg_fast_decode=settings.pose_ffmpeg_fast_decode,
+            smoothing=settings.pose_smoothing,
+            smooth_min_confidence=settings.pose_smooth_min_confidence,
+            smooth_max_jump=settings.pose_smooth_max_jump,
+            smooth_max_gap_frames=settings.pose_smooth_max_gap_frames,
+            smooth_min_cutoff=settings.pose_smooth_min_cutoff,
+            smooth_beta=settings.pose_smooth_beta,
+            smooth_d_cutoff=settings.pose_smooth_d_cutoff,
             timings=pose_timings,
         )
         if timer is not None:
@@ -239,6 +258,13 @@ def run_pipeline(session_id: int, timer: StageTimer | None = None) -> None:
         raise
     finally:
         db.close()
+        # Compare the CPU budget against the boot snapshot. In `finally` so a failed
+        # analysis still reports it, and guarded so diagnostics can never break the
+        # pipeline.
+        try:
+            log_cpu_budget_delta(f"analysis session={session_id}")
+        except Exception:  # noqa: BLE001
+            logger.debug("cpu budget delta logging failed", exc_info=True)
 
 
 def run_pipeline_from_landmarks(

@@ -85,14 +85,33 @@ class Settings(BaseSettings):
     # (The MoveNet/TFLite backend DOES honour this directly.)
     pose_num_threads: int = 0
     # Pose detection backend:
-    #   "auto"      -> use MoveNet if its model is present, else MediaPipe (default)
+    #   "mediapipe" -> always MediaPipe (33 landmarks) — the default
     #   "movenet"   -> MoveNet Lightning TFLite (17 keypoints adapted to the 33-slot
     #                  layout — faster, but no feet/hands so a few checks won't fire);
     #                  falls back to MediaPipe at runtime if it can't initialise
-    #   "mediapipe" -> always MediaPipe (33 landmarks)
-    pose_backend: str = "auto"
+    #   "auto"      -> use MoveNet if its model is present, else MediaPipe
+    # Default is "mediapipe": the MoveNet experiment is kept opt-in (the code and
+    # model remain) but MediaPipe runs as it did before the switch.
+    pose_backend: str = "mediapipe"
     # MoveNet SinglePose Lightning .tflite model (used only when pose_backend="movenet").
     movenet_model_path: Path = Path(__file__).parent / "services" / "pose" / "models" / "movenet_lightning.tflite"
+
+    # --- Landmark smoothing (post-estimation de-jitter) ---
+    # Lightweight NumPy pass applied to the assembled landmark array AFTER pose
+    # estimation. It does NOT change the model, input resolution, or processed fps —
+    # it only cleans jitter/lag/drift in the output. Adds ~single-digit ms per clip.
+    # Stages: confidence filter -> velocity/jump rejection -> gap interpolation ->
+    # One Euro smoothing (adaptive: kills jitter when still, avoids lag when fast).
+    pose_smoothing: bool = True
+    pose_smooth_min_confidence: float = 0.3   # readings below this visibility are dropped
+    pose_smooth_max_jump: float = 0.15        # max normalized move/frame before rejecting
+    pose_smooth_max_gap_frames: int = 5       # gaps longer than this stay missing (no interp)
+    # One Euro parameters. min_cutoff sets the baseline smoothing (lower = smoother but
+    # more lag); beta sets how fast the cutoff opens up with speed (higher = less lag on
+    # fast motion). Defaults are conservative starting points — tune on real clips.
+    pose_smooth_min_cutoff: float = 1.0
+    pose_smooth_beta: float = 0.5
+    pose_smooth_d_cutoff: float = 1.0
 
     # --- Auth ---
     auth_secret: str = "dev-insecure-change-me"   # HMAC signing key for session tokens
