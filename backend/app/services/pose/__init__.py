@@ -532,10 +532,17 @@ def _decode_ffmpeg(video_path, backend, *, target_fps, max_dim, max_frames, ts_b
         "-vf", f"fps={eff:g},scale={out_w}:{out_h}:flags={scale_flags}",
         "-map", "0:v:0", "-pix_fmt", "rgb24", "-f", "rawvideo", "-",
     ]
+    # Surface how much we cut per frame (pixels) and per second (fps) vs the source,
+    # so the deploy logs directly show the decode-workload reduction.
+    src_px, out_px = dw * dh, out_w * out_h
+    px_ratio = (out_px / src_px) if src_px else 1.0
+    fps_ratio = (eff / src_fps) if src_fps else 1.0
     logger.info(
         "ffmpeg preprocess: source %dx%d @ %.1ffps -> output %dx%d @ %.1ffps rgb24 "
-        "(fast_decode=%s); cmd: %s",
-        dw, dh, src_fps, out_w, out_h, eff, fast_decode, " ".join(cmd),
+        "(fast_decode=%s) | per-frame pixels %.0f%% of source, fps %.0f%% of source "
+        "(target model input ~256px); cmd: %s",
+        dw, dh, src_fps, out_w, out_h, eff, fast_decode,
+        px_ratio * 100.0, fps_ratio * 100.0, " ".join(cmd),
     )
     d = _Decoded(width=dw, height=dh, out_w=out_w, out_h=out_h,
                  src_fps=src_fps, effective_fps=eff)

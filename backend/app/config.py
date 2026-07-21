@@ -48,18 +48,25 @@ class Settings(BaseSettings):
     pose_model_path: Path | None = None
 
     # --- Pose estimation performance ---
-    # Pose runs one CPU inference per processed frame — the dominant cost. To keep
-    # analysis to ~tens of seconds regardless of clip length or camera settings, we
-    # temporally downsample to a target fps, downscale each frame, and cap the total
-    # number of processed frames. These are plenty of temporal/spatial resolution
-    # for rep detection and joint-angle measurement.
-    # ~8 fps keeps enough temporal resolution for rep counting and technique while
-    # minimising decoded/processed frames.
-    pose_target_fps: float = 5.0      # sample the source down to ~this fps
-    # Longest side is capped to this before inference. 640 => ~640x360 for 16:9.
-    # MediaPipe rescales internally to ~256px, so this is lossless for the analysis
-    # while cutting decode/preprocess work. Never modifies the original upload.
-    pose_max_dim: int = 640           # downscale so the longest side is <= this
+    # Pose runs one CPU inference per processed frame, and the ffmpeg decode/scale of
+    # those frames. To keep analysis to ~tens of seconds regardless of clip length or
+    # camera settings we (a) temporally downsample to a target fps — DECODE FEWER
+    # FRAMES — and (b) downscale each frame close to the model's working size — DECODE
+    # CLOSER TO THE MODEL OUTPUT — and cap the total processed frames.
+    #
+    # DECODE FEWER FRAMES: 4 fps is the floor that still resolves a fast rep's
+    # peak/valley (~4 samples/sec). Lower risks miscounting fast reps; raise toward
+    # 5-6 if rep detection suffers. Note: the H.264 *decode* of source frames is
+    # largely fixed by clip length/resolution — lowering this mainly cuts per-kept-
+    # frame scale/pipe/inference work, not the raw decode.
+    pose_target_fps: float = 4.0      # sample the source down to ~this fps
+    # DECODE CLOSER TO THE MODEL OUTPUT: MediaPipe's landmarker works on a ~256px ROI
+    # crop, so decoding at 640 just produces pixels it immediately shrinks. 384 sits
+    # ~1.5x above the model size — enough headroom for the ROI crop to stay sharp for
+    # a full-body subject — while cutting per-frame scale/pipe/NumPy/resize cost to
+    # ~36% of 640's (area 384^2 vs 640^2). Raise toward 512-640 if landmark precision
+    # drops for subjects that fill only part of the frame. Never modifies the upload.
+    pose_max_dim: int = 384           # downscale so the longest side is <= this
     pose_max_frames: int = 600        # hard cap on processed frames (bounds runtime)
     # Video decoder: "ffmpeg" (default; single C subprocess does decode+scale+fps
     # decimation and streams frames into MediaPipe — far faster than decoding every
