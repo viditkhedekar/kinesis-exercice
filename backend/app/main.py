@@ -42,6 +42,33 @@ def seed_exercises() -> None:
         db.close()
 
 
+def _log_storage_backend(settings) -> None:
+    """Resolve and log the storage backend at boot, so a misconfigured deploy is
+    obvious in the first few log lines rather than at the first upload.
+
+    A production host has no durable disk (Render's filesystem is wiped on every
+    deploy and restart), so falling back to the filesystem backend there means
+    uploads silently disappear later. That case gets a warning, not an info line.
+    """
+    from app.services.storage import get_storage
+
+    logger = logging.getLogger("kinesis.storage")
+    backend = settings.resolve_storage_backend()
+    get_storage()  # build it now: bad Supabase config should fail at boot
+    if backend == "supabase":
+        logger.info(
+            "storage: supabase bucket=%s (videos + artifacts are durable)",
+            settings.supabase_storage_bucket,
+        )
+    else:
+        logger.warning(
+            "storage: FILESYSTEM at %s — durable only if that path is a real disk. "
+            "On Render this is ephemeral: set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY "
+            "to store uploads in Supabase Storage.",
+            settings.storage_dir,
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     configure_logging()  # idempotent; also covers non-uvicorn entrypoints
@@ -64,6 +91,7 @@ async def lifespan(app: FastAPI):
         s.pose_backend, resolved, s.movenet_model_path.name,
         "present" if s.movenet_model_path.exists() else "MISSING",
     )
+    _log_storage_backend(s)
     seed_exercises()
     yield
 
