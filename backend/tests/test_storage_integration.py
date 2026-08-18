@@ -18,7 +18,6 @@ from app.db import get_db
 from app.main import app
 from app.models import AnalysisArtifact, Exercise, Session, SessionStatus, User, Video
 from app.services.pose import PoseResult, load_landmarks
-from app.services.storage import supabase as supabase_module
 from app.services.storage.supabase import SupabaseStorage
 from tests.test_storage import FakeSupabaseClient
 
