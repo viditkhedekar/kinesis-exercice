@@ -83,7 +83,7 @@ def _video_source(storage, video, local_video: str | Path | None) -> Iterator[st
         yield str(path)
 
 
-def _persist_landmarks(storage, session_id: int, pose: PoseResult) -> str:
+def persist_landmarks(storage, session_id: int, pose: PoseResult) -> str:
     """Serialise landmarks in memory and store them; returns the storage key.
 
     The ``.npz`` is a few MB at most (it is already compressed and temporally
@@ -284,7 +284,7 @@ def run_pipeline(
         session.video.width = pose.width
         session.video.height = pose.height
         with _timed(timer, "save_landmarks"):
-            landmarks_key = _persist_landmarks(storage, session_id, pose)
+            landmarks_key = persist_landmarks(storage, session_id, pose)
         if session.artifact is None:
             db.add(AnalysisArtifact(session_id=session_id, landmarks_path=landmarks_key))
         # One durable commit here so the expensive pose result survives any later
