@@ -16,7 +16,6 @@ test suite work with no Supabase account while production just sets the env vars
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterator
 from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import BinaryIO, Protocol, runtime_checkable
