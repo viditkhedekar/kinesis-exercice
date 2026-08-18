@@ -15,6 +15,7 @@ from app.models import (
 from app.schemas import GhostOut, ProgressPoint
 from app.services.pose import load_landmarks
 from app.services.pose.landmarks import NUM_LANDMARKS, POSE_EDGES
+from app.services.storage import get_storage
 
 GHOST_PHASE_SAMPLES = 100
 
@@ -112,7 +113,8 @@ def build_ghost(db: DbSession, current_session_id: int) -> GhostOut:
     if best_rep is None or artifact is None:
         return GhostOut(available=False)
 
-    pose = load_landmarks(artifact.landmarks_path)
+    with get_storage().open(artifact.landmarks_path) as fh:
+        pose = load_landmarks(fh)
     frames = _phase_normalize(pose.landmarks, best_rep.start_frame, best_rep.end_frame)
 
     best_snap = db.scalar(
