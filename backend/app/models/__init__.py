@@ -5,7 +5,7 @@ Single implicit user (no auth in this build). The graph:
     Exercise 1──* Session 1──1 Video
                        │
                        ├──1 AnalysisJob          (async pipeline status)
-                       ├──1 AnalysisArtifact      (landmark/metrics file refs)
+                       ├──1 AnalysisArtifact      (landmark/metrics storage keys)
                        ├──* Rep 1──* Fault        (per-rep scores + detected faults)
                        ├──* CoachingNote
                        └──1 ProgressSnapshot       (feeds charts + personal-best)
@@ -166,6 +166,10 @@ class Video(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     session_id: Mapped[int] = mapped_column(ForeignKey("sessions.id"), unique=True)
+    # STORAGE KEY, not a filesystem path: "sessions/12/source_squat.mp4". Stable
+    # across hosting providers, so the same row resolves against Supabase Storage
+    # or a local directory. Rows written before the Supabase migration may still
+    # hold an absolute path; the storage layer normalises those on read.
     path: Mapped[str] = mapped_column(String(512))
     filename: Mapped[str] = mapped_column(String(256))
     fps: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -174,6 +178,11 @@ class Video(Base):
     height: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     session: Mapped[Session] = relationship(back_populates="video")
+
+    @property
+    def storage_key(self) -> str:
+        """Readable alias for ``path`` — see the column comment."""
+        return self.path
 
 
 class AnalysisJob(Base):
@@ -196,10 +205,16 @@ class AnalysisArtifact(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     session_id: Mapped[int] = mapped_column(ForeignKey("sessions.id"), unique=True)
+    # Storage keys (see Video.path): "sessions/12/artifacts/landmarks.npz".
     landmarks_path: Mapped[str] = mapped_column(String(512))  # .npz of per-frame landmarks
     metrics_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
 
     session: Mapped[Session] = relationship(back_populates="artifact")
+
+    @property
+    def landmarks_key(self) -> str:
+        """Readable alias for ``landmarks_path`` — it holds a storage key."""
+        return self.landmarks_path
 
 
 class Rep(Base):
