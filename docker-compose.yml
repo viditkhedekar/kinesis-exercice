@@ -22,7 +22,15 @@ services:
         condition: service_healthy
     environment:
       KINESIS_DATABASE_URL: postgresql+psycopg2://kinesis:kinesis@postgres:5432/kinesis
+      # Storage. With no SUPABASE_* values set, "auto" resolves to the local
+      # filesystem below, so compose works with no Supabase account. Export
+      # SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY to exercise the production
+      # backend locally — they are read from your shell, never committed.
+      KINESIS_STORAGE_BACKEND: ${KINESIS_STORAGE_BACKEND:-auto}
       KINESIS_STORAGE_DIR: /data/kinesis
+      SUPABASE_URL: ${SUPABASE_URL:-}
+      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY:-}
+      SUPABASE_STORAGE_BUCKET: ${SUPABASE_STORAGE_BUCKET:-kinesis-media}
       # Email verification. Locally defaults to "console" (link is logged, not sent).
       # For production set EMAIL_PROVIDER=resend + RESEND_API_KEY (or sendgrid / smtp).
       KINESIS_REQUIRE_EMAIL_VERIFICATION: ${KINESIS_REQUIRE_EMAIL_VERIFICATION:-true}
@@ -34,6 +42,8 @@ services:
     ports:
       - "8000:8000"
     volumes:
+      # Local-only durable storage for the filesystem backend. Production (Render)
+      # has no such disk — everything durable lives in Supabase Storage.
       - mediadata:/data/kinesis
 
   frontend:
