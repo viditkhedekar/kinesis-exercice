@@ -9,9 +9,12 @@ analysis is available as soon as the request returns.
 """
 from __future__ import annotations
 
+import io
 import logging
 from collections import Counter
-from contextlib import nullcontext
+from collections.abc import Iterator
+from contextlib import contextmanager, nullcontext
+from pathlib import Path
 
 import numpy as np
 
@@ -57,6 +60,40 @@ logger = logging.getLogger("kinesis.pipeline")
 def _timed(timer: StageTimer | None, name: str):
     """Time a block when a timer is present; a no-op context otherwise."""
     return timer.stage(name) if timer is not None else nullcontext()
+
+
+@contextmanager
+def _video_source(storage, video, local_video: str | Path | None) -> Iterator[str]:
+    """Yield a local filesystem path to a session's clip, for the CV pipeline.
+
+    The pose stack (ffmpeg/OpenCV) needs a real path, so a remote object has to be
+    materialised on disk. Two cases:
+
+      * ``local_video`` set — the upload handler still has the clip in a temp file
+        it is about to delete anyway, so we reuse it and skip a pointless
+        round-trip back out of Supabase.
+      * otherwise — ``storage.local_path`` downloads to a temp file and removes it
+        on exit, including when analysis raises. On the filesystem backend it just
+        hands back the stored file with nothing to clean up.
+    """
+    if local_video is not None:
+        yield str(local_video)
+        return
+    with storage.local_path(video.path) as path:
+        yield str(path)
+
+
+def _persist_landmarks(storage, session_id: int, pose: PoseResult) -> str:
+    """Serialise landmarks in memory and store them; returns the storage key.
+
+    The ``.npz`` is a few MB at most (it is already compressed and temporally
+    downsampled), so a buffer beats a temp file here — no cleanup to get wrong.
+    """
+    key = storage.artifact_key(session_id, "landmarks.npz")
+    buf = io.BytesIO()
+    save_landmarks(buf, pose)
+    buf.seek(0)
+    return storage.put(key, buf, content_type="application/octet-stream")
 
 
 def _set_stage(job: AnalysisJob | None, stage: JobStage, progress: float) -> None:
@@ -178,7 +215,20 @@ def _previous_session(db, session: Session) -> Session | None:
     return db.scalar(stmt)
 
 
-def run_pipeline(session_id: int, timer: StageTimer | None = None) -> None:
+def run_pipeline(
+    session_id: int,
+    timer: StageTimer | None = None,
+    *,
+    local_video: str | Path | None = None,
+) -> None:
+    """Run the full analysis for one uploaded session.
+
+    ``local_video`` is an optional path to a copy of the clip that the caller
+    already holds on disk (the upload handler's temp file). When omitted the clip
+    is fetched from storage into a temp file for the duration of the analysis.
+    Either way the pipeline reads the source video from a local path and writes
+    every result back through the storage abstraction.
+    """
     settings = get_settings()
     storage = get_storage()
     db = SessionLocal()
@@ -197,29 +247,30 @@ def run_pipeline(session_id: int, timer: StageTimer | None = None) -> None:
         # Captured before run_pose (which flips the warm flag) so the summary shows
         # whether this analysis paid the cold model/import cost or reused a warm engine.
         pose_engine_cold = not is_pose_warm()
-        pose = run_pose(
-            session.video.path,
-            settings.active_pose_model_file(),
-            target_fps=settings.pose_target_fps,
-            max_dim=settings.pose_max_dim,
-            max_frames=settings.pose_max_frames,
-            decoder=settings.pose_decoder,
-            model_complexity=settings.pose_model_complexity,
-            reuse_model=settings.pose_reuse_model,
-            running_mode=settings.pose_running_mode,
-            num_threads=settings.pose_num_threads,
-            pose_backend=settings.resolve_backend(),
-            mediapipe_model_path=settings.pose_model_file(),  # runtime fallback target
-            ffmpeg_fast_decode=settings.pose_ffmpeg_fast_decode,
-            smoothing=settings.pose_smoothing,
-            smooth_min_confidence=settings.pose_smooth_min_confidence,
-            smooth_max_jump=settings.pose_smooth_max_jump,
-            smooth_max_gap_frames=settings.pose_smooth_max_gap_frames,
-            smooth_min_cutoff=settings.pose_smooth_min_cutoff,
-            smooth_beta=settings.pose_smooth_beta,
-            smooth_d_cutoff=settings.pose_smooth_d_cutoff,
-            timings=pose_timings,
-        )
+        with _video_source(storage, session.video, local_video) as video_path:
+            pose = run_pose(
+                video_path,
+                settings.active_pose_model_file(),
+                target_fps=settings.pose_target_fps,
+                max_dim=settings.pose_max_dim,
+                max_frames=settings.pose_max_frames,
+                decoder=settings.pose_decoder,
+                model_complexity=settings.pose_model_complexity,
+                reuse_model=settings.pose_reuse_model,
+                running_mode=settings.pose_running_mode,
+                num_threads=settings.pose_num_threads,
+                pose_backend=settings.resolve_backend(),
+                mediapipe_model_path=settings.pose_model_file(),  # runtime fallback target
+                ffmpeg_fast_decode=settings.pose_ffmpeg_fast_decode,
+                smoothing=settings.pose_smoothing,
+                smooth_min_confidence=settings.pose_smooth_min_confidence,
+                smooth_max_jump=settings.pose_smooth_max_jump,
+                smooth_max_gap_frames=settings.pose_smooth_max_gap_frames,
+                smooth_min_cutoff=settings.pose_smooth_min_cutoff,
+                smooth_beta=settings.pose_smooth_beta,
+                smooth_d_cutoff=settings.pose_smooth_d_cutoff,
+                timings=pose_timings,
+            )
         if timer is not None:
             timer.merge(pose_timings)
             timer.note("frames", len(pose.landmarks))
@@ -232,11 +283,10 @@ def run_pipeline(session_id: int, timer: StageTimer | None = None) -> None:
         session.video.duration = pose.duration
         session.video.width = pose.width
         session.video.height = pose.height
-        landmarks_path = storage.artifact_path(session_id, "landmarks.npz")
         with _timed(timer, "save_landmarks"):
-            save_landmarks(landmarks_path, pose)
+            landmarks_key = _persist_landmarks(storage, session_id, pose)
         if session.artifact is None:
-            db.add(AnalysisArtifact(session_id=session_id, landmarks_path=landmarks_path))
+            db.add(AnalysisArtifact(session_id=session_id, landmarks_path=landmarks_key))
         # One durable commit here so the expensive pose result survives any later
         # (cheap) error, rather than committing at every stage.
         with _timed(timer, "db_write_pose"):
