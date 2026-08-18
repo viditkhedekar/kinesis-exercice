@@ -12,6 +12,10 @@ dependencies = [
     "alembic>=1.13",
     "pydantic>=2.6",
     "pydantic-settings>=2.2",
+    # Supabase Storage is reached over its REST API (see services/storage/
+    # supabase_client.py) rather than via the supabase SDK, which would pull
+    # auth/postgrest/realtime into the image for five object operations.
+    "httpx>=0.27",
     "numpy>=1.26",
     "scipy>=1.12",
     "PyYAML>=6.0",
