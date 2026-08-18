@@ -7,7 +7,9 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+from urllib.parse import urlsplit
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # MediaPipe pose "complexity" -> Tasks model bundle filename (0=lite, 1=full, 2=heavy).
@@ -18,15 +20,67 @@ _POSE_MODEL_FILES = {
 }
 
 
+# Hosts treated as "local" when deciding whether to force TLS on the database
+# connection. Anything else (Neon, RDS, ...) gets ``sslmode=require`` added.
+_LOCAL_DB_HOSTS = {"localhost", "127.0.0.1", "::1", ""}
+
+
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="KINESIS_", env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_prefix="KINESIS_", env_file=".env", extra="ignore", populate_by_name=True
+    )
 
     # --- Infrastructure ---
+    # Managed Postgres (Neon in production). Accepts any of the shapes Neon hands
+    # out — ``postgres://``, ``postgresql://``, or an explicit ``+psycopg2`` driver —
+    # and is normalised for SQLAlchemy by ``normalized_database_url()``.
     database_url: str = "postgresql+psycopg2://kinesis:kinesis@localhost:5432/kinesis"
+    # Neon's serverless compute auto-suspends when idle, which silently kills pooled
+    # connections. ``pool_pre_ping`` catches a dead connection on checkout; recycling
+    # well under the idle timeout keeps us from handing one out in the first place.
+    db_pool_recycle: int = 300      # seconds; recycle connections older than this
+    db_pool_size: int = 5
+    db_max_overflow: int = 5
+    db_connect_timeout: int = 10    # seconds for the initial TCP/TLS handshake
 
     # --- Storage ---
-    # Root directory for uploaded videos and analysis artifacts (FS storage backend).
+    # Which Storage implementation serves uploads/artifacts:
+    #   "auto"       -> SupabaseStorage when SUPABASE_URL + service-role key are set,
+    #                   FileSystemStorage otherwise (the default: local dev and tests
+    #                   need no Supabase account, production just sets the env vars)
+    #   "supabase"   -> always Supabase (raises at startup if unconfigured)
+    #   "filesystem" -> always the local filesystem
+    storage_backend: str = "auto"
+    # Root directory for the FileSystemStorage backend. On Render this is EPHEMERAL —
+    # it is only ever used for local dev, tests, and the temp files that the CV
+    # pipeline needs; production durable storage is Supabase.
     storage_dir: Path = Path("/data/kinesis")
+
+    # --- Supabase Storage ---
+    # Read from the un-prefixed SUPABASE_* names Supabase itself documents (the
+    # KINESIS_-prefixed spellings are accepted too, for consistency with the rest
+    # of this file). The service-role key is server-side only and must NEVER be
+    # exposed to the frontend — it bypasses row-level security.
+    supabase_url: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("SUPABASE_URL", "KINESIS_SUPABASE_URL"),
+    )
+    supabase_service_role_key: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "SUPABASE_SERVICE_ROLE_KEY", "KINESIS_SUPABASE_SERVICE_ROLE_KEY"
+        ),
+    )
+    supabase_storage_bucket: str = Field(
+        default="kinesis-media",
+        validation_alias=AliasChoices(
+            "SUPABASE_STORAGE_BUCKET", "KINESIS_SUPABASE_STORAGE_BUCKET"
+        ),
+    )
+    # Lifetime of the signed URLs handed to the browser for video playback. Short
+    # enough that a leaked link expires quickly, long enough to watch a clip.
+    supabase_signed_url_ttl: int = 3600  # seconds
+    supabase_timeout: float = 120.0      # HTTP timeout for storage calls (uploads are big)
 
     # --- Exercise configs ---
     # Directory holding one YAML config per exercise (the extensibility surface).
@@ -160,6 +214,41 @@ class Settings(BaseSettings):
 
     # --- API ---
     cors_origins: list[str] = ["http://localhost:3000"]
+
+    def normalized_database_url(self) -> str:
+        """The connection string in the form SQLAlchemy + psycopg2 expect.
+
+        Neon (and most managed providers) hand out ``postgresql://...`` — or the
+        legacy ``postgres://`` — with no driver, which SQLAlchemy resolves to the
+        default psycopg2 dialect anyway, but being explicit keeps the behaviour
+        pinned. We also force TLS for non-local hosts: Neon *requires* it, and
+        libpq would otherwise happily negotiate down. SQLite (tests) passes through
+        untouched.
+        """
+        url = self.database_url.strip()
+        if url.startswith("postgres://"):
+            url = "postgresql://" + url[len("postgres://"):]
+        if url.startswith("postgresql://"):
+            url = "postgresql+psycopg2://" + url[len("postgresql://"):]
+        if not url.startswith("postgresql+psycopg2://"):
+            return url  # sqlite:// and friends
+        if "sslmode=" not in url:
+            host = (urlsplit(url).hostname or "").lower()
+            # Bare service names (docker-compose's "postgres") and loopback run
+            # without TLS; anything with a real domain is remote and must use it.
+            if host not in _LOCAL_DB_HOSTS and "." in host:
+                url += ("&" if "?" in url else "?") + "sslmode=require"
+        return url
+
+    def supabase_configured(self) -> bool:
+        return bool(self.supabase_url and self.supabase_service_role_key)
+
+    def resolve_storage_backend(self) -> str:
+        """Resolve ``storage_backend="auto"`` against the Supabase configuration."""
+        backend = self.storage_backend.lower().strip()
+        if backend == "auto":
+            return "supabase" if self.supabase_configured() else "filesystem"
+        return backend
 
     def pose_model_file(self) -> str:
         """Resolve the pose model path: explicit override, else the file for the
