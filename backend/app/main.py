@@ -54,7 +54,9 @@ def _log_storage_backend(settings) -> None:
 
     logger = logging.getLogger("kinesis.storage")
     backend = settings.resolve_storage_backend()
-    get_storage()  # build it now: bad Supabase config should fail at boot
+    # Build the backend now rather than on the first upload, so an explicit
+    # KINESIS_STORAGE_BACKEND=supabase with missing credentials fails at boot.
+    get_storage()
     if backend == "supabase":
         logger.info(
             "storage: supabase bucket=%s (videos + artifacts are durable)",
