@@ -30,6 +30,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import BinaryIO
 
 import numpy as np
 
@@ -962,7 +963,13 @@ def run_pose(
     )
 
 
-def save_landmarks(path: str, result: PoseResult) -> None:
+def save_landmarks(path: str | Path | BinaryIO, result: PoseResult) -> None:
+    """Serialise a pose result to ``.npz``.
+
+    Accepts a path *or* a writable binary stream, so the pipeline can serialise
+    straight into memory and hand the buffer to the storage backend without a
+    temp file. (NumPy only appends the ``.npz`` suffix for string paths.)
+    """
     np.savez_compressed(
         path,
         landmarks=result.landmarks,
@@ -973,7 +980,8 @@ def save_landmarks(path: str, result: PoseResult) -> None:
     )
 
 
-def load_landmarks(path: str) -> PoseResult:
+def load_landmarks(path: str | Path | BinaryIO) -> PoseResult:
+    """Read a landmark ``.npz`` from a path or any seekable binary stream."""
     data = np.load(path)
     return PoseResult(
         landmarks=data["landmarks"],
