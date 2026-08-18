@@ -39,12 +39,12 @@ from app.schemas import (
     SessionOut,
 )
 from app.services.biomechanics import compute_metrics
-from app.services.pose import PoseResult, save_landmarks
+from app.services.pose import PoseResult
 from app.services.pose.landmarks import NUM_LANDMARKS
 from app.services.reps import detect_reps
 from app.services.rules import evaluate_session
 from app.services.storage import get_storage
-from app.services.pipeline import run_pipeline_from_landmarks
+from app.services.pipeline import persist_landmarks, run_pipeline_from_landmarks
 
 router = APIRouter(prefix="/sessions/live", tags=["live"])
 
@@ -237,11 +237,11 @@ def finish_live_session(
     )
 
     # Persist landmarks so /landmarks, /metrics and Ghost Replay work for live too.
-    storage = get_storage()
-    landmarks_path = storage.artifact_path(session.id, "landmarks.npz")
-    save_landmarks(landmarks_path, pose)
+    # Same storage abstraction as the upload path, so live sessions land in the
+    # Supabase bucket in production and on disk locally, under the same key.
+    landmarks_key = persist_landmarks(get_storage(), session.id, pose)
     if session.artifact is None:
-        db.add(AnalysisArtifact(session_id=session.id, landmarks_path=landmarks_path))
+        db.add(AnalysisArtifact(session_id=session.id, landmarks_path=landmarks_key))
     db.commit()
 
     # Time under tension = summed rep durations; computed inside the pipeline via
