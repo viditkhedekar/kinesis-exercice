@@ -189,9 +189,11 @@ class Settings(BaseSettings):
     remember_days: int = 30                       # "remember me" lifetime
 
     # --- Email verification ---
-    # New accounts must confirm their email before they can log in. Disable only
-    # for local flows/tests where email delivery isn't wanted.
-    require_email_verification: bool = True
+    # New accounts must confirm their email before they can log in. Off by default
+    # (the verification links weren't delivering reliably) — the token issuing,
+    # sending, and consuming code all stay in place, so this can be flipped back
+    # on once delivery is sorted out.
+    require_email_verification: bool = False
     email_verification_ttl_hours: int = 24        # link lifetime
     email_resend_cooldown_seconds: int = 60       # min gap between verification emails
     # Public base URL of the frontend, used to build the link in the email
