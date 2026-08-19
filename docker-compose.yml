@@ -31,9 +31,10 @@ services:
       SUPABASE_URL: ${SUPABASE_URL:-}
       SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY:-}
       SUPABASE_STORAGE_BUCKET: ${SUPABASE_STORAGE_BUCKET:-kinesis-media}
-      # Email verification. Locally defaults to "console" (link is logged, not sent).
-      # For production set EMAIL_PROVIDER=resend + RESEND_API_KEY (or sendgrid / smtp).
-      KINESIS_REQUIRE_EMAIL_VERIFICATION: ${KINESIS_REQUIRE_EMAIL_VERIFICATION:-true}
+      # Email verification. Off by default (links weren't delivering reliably) —
+      # set to true once delivery is sorted (EMAIL_PROVIDER=resend + RESEND_API_KEY,
+      # or sendgrid / smtp). Locally, "console" logs the link instead of sending it.
+      KINESIS_REQUIRE_EMAIL_VERIFICATION: ${KINESIS_REQUIRE_EMAIL_VERIFICATION:-false}
       KINESIS_FRONTEND_URL: ${KINESIS_FRONTEND_URL:-http://localhost:3000}
       KINESIS_EMAIL_PROVIDER: ${KINESIS_EMAIL_PROVIDER:-console}
       KINESIS_EMAIL_FROM: ${KINESIS_EMAIL_FROM:-physIQal <onboarding@resend.dev>}
