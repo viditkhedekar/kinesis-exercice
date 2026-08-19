@@ -52,7 +52,13 @@ def test_register_is_unverified_and_sends_email(db):
     assert len(outbox) == 1 and outbox[0].to == "new@user.com"
 
 
-def test_login_blocked_until_verified_then_allowed(db):
+def test_login_blocked_until_verified_then_allowed(db, monkeypatch):
+    # Enforcement is off by default app-wide (see app.config), so this test pins
+    # it on for itself rather than relying on that default.
+    import app.api.auth as auth_module
+
+    monkeypatch.setattr(auth_module.settings, "require_email_verification", True)
+
     client = _client(db)
     _register(client)
 
